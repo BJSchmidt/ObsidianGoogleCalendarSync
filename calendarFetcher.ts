@@ -1,6 +1,26 @@
 import { calendar_v3 } from "googleapis";
 import { CalendarEventNote, GoogleCalendarListEntry } from "./types";
 
+// Extract wall-clock HH:MM in a given IANA timezone from a Google dateTime string.
+// Google may return UTC ("...Z") or a local offset ("...-06:00"); both are handled.
+function wallClockTime(dateTimeStr: string, timeZone: string): string {
+	const dt = new Date(dateTimeStr);
+	const parts = new Intl.DateTimeFormat('en-US', {
+		hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone,
+	}).formatToParts(dt);
+	const h = parts.find(p => p.type === 'hour')?.value ?? '00';
+	const m = parts.find(p => p.type === 'minute')?.value ?? '00';
+	return `${h}:${m}`;
+}
+
+// Extract YYYY-MM-DD in a given IANA timezone from a Google dateTime string.
+function wallClockDate(dateTimeStr: string, timeZone: string): string {
+	const dt = new Date(dateTimeStr);
+	return new Intl.DateTimeFormat('en-CA', {
+		year: 'numeric', month: '2-digit', day: '2-digit', timeZone,
+	}).format(dt);
+}
+
 export class CalendarFetcher {
 	constructor(private calendar: calendar_v3.Calendar) {}
 
@@ -95,24 +115,24 @@ export class CalendarFetcher {
 
 		const isAllDay = !raw.start?.dateTime;
 
-		// Determine the canonical date string (YYYY-MM-DD)
-		const dateStr = (raw.start?.date ?? raw.start?.dateTime?.slice(0, 10))!;
-
-		// Extract times directly from the raw dateTime string (wall-clock time in the
-		// event's own timezone, not converted to system local time)
-		let startTimeStr: string | null = null;
-		let endTimeStr: string | null = null;
-		if (!isAllDay && raw.start?.dateTime) {
-			startTimeStr = raw.start.dateTime.slice(11, 16); // "HH:MM"
-		}
-		if (!isAllDay && raw.end?.dateTime) {
-			endTimeStr = raw.end.dateTime.slice(11, 16); // "HH:MM"
-		}
-
-		// Capture the event's timezone so we can round-trip datetimes correctly
+		// Resolve the event's timezone first so time/date extraction is correct
 		const timezone = raw.start?.timeZone
 			?? raw.end?.timeZone
 			?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+		// Determine the canonical date string (YYYY-MM-DD) in the event's timezone
+		const dateStr = raw.start?.date
+			?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, timezone) : '')!;
+
+		// Extract wall-clock times in the event's timezone (handles UTC "Z" responses)
+		let startTimeStr: string | null = null;
+		let endTimeStr: string | null = null;
+		if (!isAllDay && raw.start?.dateTime) {
+			startTimeStr = wallClockTime(raw.start.dateTime, timezone);
+		}
+		if (!isAllDay && raw.end?.dateTime) {
+			endTimeStr = wallClockTime(raw.end.dateTime, timezone);
+		}
 
 		// For multi-day all-day events, compute inclusive end date
 		// Google's end date is exclusive, so subtract 1 day
