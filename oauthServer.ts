@@ -1,4 +1,5 @@
 import * as http from "http";
+import * as net from "net";
 import * as url from "url";
 import { google } from "googleapis";
 import { Credentials } from "google-auth-library";
@@ -6,6 +7,10 @@ export interface OAuthCredentials {
 	clientId: string;
 	clientSecret: string;
 }
+
+// Ports to try for the OAuth callback server.  Users should register
+// http://localhost:PORT/callback for each of these in Google Cloud Console.
+const OAUTH_PORTS = [8080, 8081, 8082, 8083, 8084];
 
 export class OAuthServer {
 	private server: http.Server | null = null;
@@ -19,10 +24,29 @@ export class OAuthServer {
 		);
 	}
 
+	/** Find the first available port from OAUTH_PORTS */
+	private async findAvailablePort(): Promise<number> {
+		for (const port of OAUTH_PORTS) {
+			const available = await new Promise<boolean>(resolve => {
+				const tester = net.createServer();
+				tester.once('error', () => resolve(false));
+				tester.listen(port, () => {
+					tester.close(() => resolve(true));
+				});
+			});
+			if (available) return port;
+		}
+		throw new Error(
+			`All OAuth callback ports (${OAUTH_PORTS.join(', ')}) are in use. ` +
+			`Free one of these ports and try again.`
+		);
+	}
+
 	async startOAuthFlow(credentials: OAuthCredentials): Promise<Credentials> {
+		this.port = await this.findAvailablePort();
 		return new Promise((resolve, reject) => {
 			this.server = this.createServer(credentials, resolve, reject);
-			this.startServer(credentials);
+			this.startServer(credentials, reject);
 		});
 	}
 	private createServer(
@@ -31,9 +55,14 @@ export class OAuthServer {
 		reject: (reason?: Error) => void
 	): http.Server {
 		return http.createServer((req, res) => {
-			req.url &&
-				url.parse(req.url, true).pathname === "/callback" &&
+			if (req.url && url.parse(req.url, true).pathname === "/callback") {
 				this.handleCallback(req, res, credentials, resolve, reject);
+			} else {
+				// Browsers may hit other paths (e.g. /favicon.ico) — respond immediately
+				// so they don't hang waiting for a response.
+				res.writeHead(404, { "Content-Type": "text/plain" });
+				res.end("Not found");
+			}
 		});
 	}
 	private handleCallback(
@@ -93,15 +122,17 @@ export class OAuthServer {
 		`);
 	}
 
-	private startServer(credentials: OAuthCredentials): void {
+	private startServer(credentials: OAuthCredentials, reject: (reason?: Error) => void): void {
 		this.server?.listen(this.port, () => {
 			const authUrl = this.generateAuthUrl(credentials);
 			window.open(authUrl, "_blank");
 		});
 
-		this.server?.on("error", (err) => {
+		this.server?.on("error", (err: Error) => {
 			this.closeServer();
-			throw err;
+			// Call reject so the Promise from startOAuthFlow() rejects cleanly.
+			// Throwing inside a Node event handler would crash uncaught.
+			reject(err);
 		});
 	}
 
@@ -109,8 +140,8 @@ export class OAuthServer {
 		const auth = this.createOAuth2Client(credentials);
 
 		const scopes = [
+			"https://www.googleapis.com/auth/calendar.events",
 			"https://www.googleapis.com/auth/calendar.readonly",
-			"https://www.googleapis.com/auth/tasks.readonly",
 		];
 
 		return auth.generateAuthUrl({

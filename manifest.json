@@ -1,10 +1,9 @@
 {
-	"id": "google-calendar-importer",
-	"name": "Google Calendar Importer",
-	"version": "1.1.1",
-	"minAppVersion": "0.15.0",
-	"description": "A simple and light-weighted google calendar importer, allow injecting the events / tasks of a day automatically to your daily notes, or import it to anywhere with a command.",
-	"author": "lexafaxine",
-	"authorUrl": "https://github.com/lexafaxine",
+	"id": "google-calendar-sync",
+	"name": "Google Calendar Sync",
+	"version": "2.0.0",
+	"minAppVersion": "1.4.0",
+	"description": "Sync Google Calendar events as individual Obsidian notes with YAML frontmatter. Supports two-way sync and Obsidian Bases views.",
+	"author": "bj",
 	"isDesktopOnly": true
 }

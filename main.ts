@@ -1,229 +1,328 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, MarkdownView, moment } from 'obsidian';
+import { Notice, Plugin, TFile, normalizePath } from 'obsidian';
+import { Credentials } from 'google-auth-library';
 import { GoogleCalendarAPI, GoogleCalendarCredentials } from './googleCalendarAPI';
-import { Credentials } from "google-auth-library";
-import { createCodeBlockProcessor } from './codeBlockProcessor';
-import { DateInputModal } from './dateInputModal';
+import { NoteManager } from './noteManager';
+import { TemplateEngine } from './templateEngine';
+import { SyncEngine } from './syncEngine';
+import { TwoWaySyncHandler } from './twoWaySync';
+import { GoogleCalendarSyncSettingTab } from './settingsTab';
+import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings } from './types';
 
-interface GoogleCalendarImporterSettings {
-	enabledForDailyNotes: boolean;
-	googleClientId: string;
-	googleClientSecret: string;
-	googleAccessToken: string;
-	googleRefreshToken: string;
-}
-
-const DEFAULT_SETTINGS: GoogleCalendarImporterSettings = {
-	enabledForDailyNotes: true,
-	googleClientId: '',
-	googleClientSecret: '',
-	googleAccessToken: '',
-	googleRefreshToken: ''
-}
-
-export default class GoogleCalendarImporter extends Plugin {
-	settings: GoogleCalendarImporterSettings;
-	private googleCalendarAPI: GoogleCalendarAPI;
+export default class GoogleCalendarSync extends Plugin {
+	settings: GoogleCalendarSyncSettings;
+	api: GoogleCalendarAPI;
+	private noteManager: NoteManager;
+	private templateEngine: TemplateEngine;
+	syncEngine: SyncEngine;
+	private twoWaySync: TwoWaySyncHandler;
 
 	async onload() {
 		await this.loadSettings();
+
+		this.api = new GoogleCalendarAPI(
+			this.buildCredentials(),
+			this.onTokensUpdated.bind(this)
+		);
+
+		this.noteManager = new NoteManager(this.app, this.settings);
+		this.templateEngine = new TemplateEngine(this.app);
+
+		this.syncEngine = new SyncEngine(
+			this.app,
+			this.api,
+			this.noteManager,
+			this.templateEngine,
+			() => this.settings,
+			() => this.saveSettings()
+		);
+
+		this.twoWaySync = new TwoWaySyncHandler(
+			this.app,
+			this.api,
+			this.noteManager,
+			() => this.settings,
+			() => this.syncEngine.syncing
+		);
+
+		// Keep the two-way sync snapshot cache up to date after every G→O upsert
+		this.syncEngine.onNoteUpserted = (eventId, snapshot) => {
+			this.twoWaySync.updateSnapshot(eventId, snapshot);
+		};
+
+		// Wait for the workspace to be ready, then for Obsidian Sync to settle, then
+		// initialize snapshots and run the first G→O sync.  O→G watching (syncReady)
+		// is intentionally blocked until after the first G→O sync so that stale notes
+		// restored by Obsidian Sync cannot push months-old data to Google Calendar
+		// before fresh notes have been written and snapshots updated.
+		this.app.workspace.onLayoutReady(async () => {
+			// Wait for Obsidian Sync to finish downloading cloud changes before we
+			// read or write any notes.  No-op if Obsidian Sync is not enabled.
+			await this.waitForObsidianSync();
+
+			try {
+				await this.twoWaySync.initialize();
+			} catch (err) {
+				console.error('GoogleCalendarSync: initialize failed:', err);
+			}
+
+			if (this.settings.googleAccessToken && this.settings.enabledCalendars.length > 0) {
+				try {
+					await this.syncEngine.runSync();
+				} catch (err) {
+					console.error('GoogleCalendarSync: startup sync failed:', err);
+				}
+			}
+
+			// Unblock O→G watching now that snapshots reflect current Google state
+			this.twoWaySync.setSyncReady(true);
+
+			// Push any existing files in the sync folder that have a date but no event-id
+			// (e.g. events created by Full Calendar before this plugin ran)
+			try {
+				await this.twoWaySync.scanForUnsyncedFiles();
+			} catch (err) {
+				console.error('GoogleCalendarSync: scanForUnsyncedFiles failed:', err);
+			}
+		});
+
+		// Ribbon icon for manual sync
+		this.addRibbonIcon('calendar-glyph', 'Sync Google Calendar', () => {
+			this.syncEngine.runSync();
+		});
+
+		// Commands
+		this.addCommand({
+			id: 'sync-google-calendar',
+			name: 'Sync Google Calendar',
+			callback: () => this.syncEngine.runSync(),
+		});
+
+		this.addCommand({
+			id: 'new-calendar-event',
+			name: 'New Calendar Event',
+			callback: () => this.createNewEventNote(),
+		});
+
+		this.addCommand({
+			id: 're-sync-google-calendar-force',
+			name: 'Force re-sync Google Calendar (refresh all notes)',
+			callback: () => this.syncEngine.runForceResync(),
+		});
+
+		// Settings tab
+		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
+
+		// Two-way sync: watch for file modifications
 		this.registerEvent(
-			this.app.workspace.on('file-open', async (file) => {
-				if (file && this.settings.enabledForDailyNotes && this.isDailyNote(file)) {
-					// Wait for the view to switch to the new file before inserting
-					setTimeout(async () => {
-						await this.insertCalendarBlock(file);
-					}, 100);
+			this.app.vault.on('modify', (file) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					this.twoWaySync.handleFileModify(file);
 				}
 			})
 		);
 
-		this.addCommand({
-			id: 'insert-google-calendar-block',
-			name: 'Insert Google Calendar block',
-			editorCheckCallback: (checking, editor, ctx) => {
-				if (ctx instanceof MarkdownView && ctx.file) {
-					if (!checking) {
-						const file = ctx.file;
-						new DateInputModal(this.app, (date: string) => {
-							this.insertCalendarBlock(file, date, true);
-						}).open();
-					}
-					return true;
+		// Two-way sync: watch for new file creation
+		this.registerEvent(
+			this.app.vault.on('create', (file) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					this.twoWaySync.handleFileCreate(file);
 				}
-				return false;
-			}
-		});
-
-		this.registerMarkdownCodeBlockProcessor(
-			"google-calendar", // for already-exist check
-			createCodeBlockProcessor(this.googleCalendarAPI)
+			})
 		);
 
-		this.addSettingTab(new GoogleCalendarSettingTab(this.app, this));
+		// Two-way sync: push deletion to Google when a synced note is deleted.
+		// We capture frontmatter from the metadata cache (still available briefly
+		// after deletion) so we know which calendar/event to target.
+		this.registerEvent(
+			this.app.vault.on('delete', (file) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					const cache = this.app.metadataCache.getCache(file.path);
+					const fm = cache?.frontmatter;
+					if (fm && fm['cal-type'] === 'calendar-event') {
+						this.twoWaySync.handleFileDelete(file, fm);
+					}
+				}
+			})
+		);
+
+		// Keep event index in sync when files are renamed/moved
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					this.noteManager.updateIndexPath(oldPath, file.path);
+				}
+			})
+		);
+
+		// Auto-sync
+		if (this.settings.autoSyncInterval > 0) {
+			this.syncEngine.startAutoSync();
+		}
 	}
 
 	onunload() {
-		if (this.googleCalendarAPI) {
-			this.googleCalendarAPI.cleanup();
-		}
+		this.syncEngine?.stopAutoSync();
+		this.twoWaySync?.destroy();
+		this.api?.cleanup();
 	}
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		this.initializeGoogleCalendarAPI(); // TODO: reload authenticate info real time rather than after loadSettings.
-	}
-
-	private initializeGoogleCalendarAPI() {
-		const credentials: GoogleCalendarCredentials = {
-			clientId: this.settings.googleClientId,
-			clientSecret: this.settings.googleClientSecret,
-			accessToken: this.settings.googleAccessToken,
-			refreshToken: this.settings.googleRefreshToken
-		};
-
-		const onTokensUpdated = async (tokens: Credentials) => {
-			if (tokens.access_token) {
-				this.settings.googleAccessToken = tokens.access_token;
-			}
-			if (tokens.refresh_token) {
-				this.settings.googleRefreshToken = tokens.refresh_token;
-			}
-			await this.saveSettings();
-		};
-
-		this.googleCalendarAPI = new GoogleCalendarAPI(credentials, onTokensUpdated);
-	}
-
-	async handleGoogleAuth() {
-		if (!this.settings.googleClientId || !this.settings.googleClientSecret) {
-			return;
-		}
-
-		try {
-			const tokens = await this.googleCalendarAPI.startOAuthFlow();
-			if (tokens.access_token && tokens.refresh_token) {
-				this.settings.googleAccessToken = tokens.access_token;
-				this.settings.googleRefreshToken = tokens.refresh_token || '';
-				await this.saveSettings();
-				this.initializeGoogleCalendarAPI();
-				this.registerMarkdownCodeBlockProcessor(
-					"google-calendar",
-					createCodeBlockProcessor(this.googleCalendarAPI)
-				);
-			}
-		} catch (error) {
-			console.error('Error during OAuth flow:', error);
-		}
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
 
-	isDailyNote(file: TFile): boolean {
-		const dailyNotesFormat = /\d{4}-\d{2}-\d{2}/;
-		return dailyNotesFormat.test(file.basename);
-	}
+	async handleGoogleAuth() {
+		if (!this.settings.googleClientId || !this.settings.googleClientSecret) {
+			new Notice('Please enter your Google client ID and secret first.');
+			return;
+		}
 
-	private extractDateFromFilename(file: TFile): string {
-		const dateMatch = file.basename.match(/\d{4}-\d{2}-\d{2}/);
-		return dateMatch ? dateMatch[0] : '';
-	}
+		// Rebuild the API with the latest credentials before starting OAuth
+		this.api = new GoogleCalendarAPI(
+			this.buildCredentials(),
+			this.onTokensUpdated.bind(this)
+		);
 
-	async insertCalendarBlock(file: TFile, customDate?: string, isFromCommand?: boolean) {
-		const todayDate = moment().format('YYYY-MM-DD');
+		try {
+			const tokens = await this.api.startOAuthFlow();
+			if (tokens.access_token) {
+				this.settings.googleAccessToken = tokens.access_token;
+				this.settings.googleRefreshToken = tokens.refresh_token || '';
+				// Clear stale sync tokens since we have fresh credentials
+				this.settings.syncTokens = {};
+				await this.saveSettings();
 
-		const dateString = isFromCommand
-			? (customDate || todayDate)
-			: (customDate || this.extractDateFromFilename(file) || todayDate);
-		const displayDate = dateString;
+				// Re-initialize with new tokens
+				this.api = new GoogleCalendarAPI(
+					this.buildCredentials(),
+					this.onTokensUpdated.bind(this)
+				);
+				this.rebuildServices();
 
-		const calendarBlock = `
-\`\`\`google-calendar
-{
-  "date": "${displayDate}",
-  "refreshInterval": 60,
-  "showEvents": true,
-  "showTasks": true,
-  "title": "📅 Calendar for ${displayDate}"
-}
-\`\`\``;
-
-		const leaf = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (leaf && leaf.editor && leaf.file === file) {
-			const content = leaf.editor.getValue();
-
-			// Check if google-calendar block already exists
-			if (content.includes('```google-calendar') && !isFromCommand) {
-				return; // Don't insert duplicate blocks
+				new Notice('Google Calendar authorized successfully!');
 			}
-
-			leaf.editor.setValue(content + calendarBlock);
-			leaf.editor.setCursor(leaf.editor.lastLine(), 0);
+		} catch (error) {
+			console.error('Error during OAuth flow:', error);
+			new Notice('Authorization failed. Check the console for details.');
 		}
 	}
 
-}
+	private async createNewEventNote(): Promise<void> {
+		const settings = this.settings;
 
-class GoogleCalendarSettingTab extends PluginSettingTab {
-	plugin: GoogleCalendarImporter;
+		const calendarFolderName = await this.getDefaultCalendarName();
+		const folderPath = normalizePath(`${settings.syncFolder}/${calendarFolderName}`);
+		await this.noteManager.ensureFolderExists(folderPath);
 
-	constructor(app: App, plugin: GoogleCalendarImporter) {
-		super(app, plugin);
-		this.plugin = plugin;
+		// Unique filename using current date + time
+		const now = new Date();
+		const dateStr = now.toISOString().slice(0, 10);
+		const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
+		const filename = `New Calendar Event ${dateStr} ${timeStr}.md`;
+		const filePath = normalizePath(`${folderPath}/${filename}`);
+
+		const templateContent = await this.templateEngine.renderNewEventTemplate(
+			settings.newEventTemplatePath
+		);
+
+		try {
+			const file = await this.app.vault.create(filePath, templateContent);
+			const leaf = this.app.workspace.getLeaf(false);
+			await leaf.openFile(file);
+		} catch (err) {
+			console.error('Error creating new event note:', err);
+			new Notice('Failed to create new event note.');
+		}
 	}
 
-	display(): void {
-		const {containerEl} = this;
+	private async getDefaultCalendarName(): Promise<string> {
+		const defaultId = this.settings.defaultCalendarId;
+		if (!defaultId || defaultId === 'primary') return 'Primary';
+		try {
+			const calendars = await this.api.fetcher.listCalendars();
+			const match = calendars.find(c => c.id === defaultId);
+			return match ? this.noteManager.sanitizeFilename(match.name) : 'Primary';
+		} catch {
+			return 'Primary';
+		}
+	}
 
-		containerEl.empty();
+	private buildCredentials(): GoogleCalendarCredentials {
+		return {
+			clientId: this.settings.googleClientId,
+			clientSecret: this.settings.googleClientSecret,
+			accessToken: this.settings.googleAccessToken,
+			refreshToken: this.settings.googleRefreshToken,
+		};
+	}
 
-		new Setting(containerEl)
-			.setName('Enable for daily notes')
-			.setDesc('Automatically insert calendar block when opening daily notes')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.enabledForDailyNotes)
-				.onChange(async (value) => {
-					this.plugin.settings.enabledForDailyNotes = value;
-					await this.plugin.saveSettings();
-				}));
+	private async onTokensUpdated(tokens: Credentials): Promise<void> {
+		if (tokens.access_token) {
+			this.settings.googleAccessToken = tokens.access_token;
+		}
+		if (tokens.refresh_token) {
+			this.settings.googleRefreshToken = tokens.refresh_token;
+		}
+		try {
+			await this.saveSettings();
+		} catch (err) {
+			console.error('Failed to persist updated OAuth tokens:', err);
+		}
+	}
 
-		containerEl.createEl('h3', {text: 'Google Calendar API'});
+	private waitForObsidianSync(): Promise<void> {
+		const sync = (this.app as any)?.internalPlugins?.plugins?.sync?.instance;
+		if (!sync) return Promise.resolve();
+		if (sync.syncStatus?.toLowerCase() === 'fully synced') return Promise.resolve();
 
-		new Setting(containerEl)
-			.setName('Google client ID')
-			.setDesc('OAuth 2.0 client ID from Google Cloud console')
-			.addText(text => text
-				.setPlaceholder('Enter your Google client ID')
-				.setValue(this.plugin.settings.googleClientId)
-				.onChange(async (value) => {
-					this.plugin.settings.googleClientId = value;
-					await this.plugin.saveSettings();
-				}));
+		return new Promise<void>(resolve => {
+			let done = false;
+			const syncIntervalMs = (this.settings.autoSyncInterval ?? 15) * 60_000;
 
-		new Setting(containerEl)
-			.setName('Google client secret')
-			.setDesc('OAuth 2.0 client secret from Google Cloud Console')
-			.addText(text => text
-				.setPlaceholder('Enter your Google client secret')
-				.setValue(this.plugin.settings.googleClientSecret)
-				.onChange(async (value) => {
-					this.plugin.settings.googleClientSecret = value;
-					await this.plugin.saveSettings();
-				}));
+			// Notify after 2 minutes, then every sync interval thereafter
+			const initialDelay = window.setTimeout(() => {
+				new Notice('Google Calendar Sync is waiting for Obsidian Sync to finish…');
+				const repeatInterval = window.setInterval(() => {
+					if (done) { window.clearInterval(repeatInterval); return; }
+					new Notice('Google Calendar Sync is still waiting for Obsidian Sync to finish…');
+				}, syncIntervalMs);
+			}, 2 * 60_000);
 
-		new Setting(containerEl)
-			.setName('Google authorization')
-			.setDesc('Click to authorize access to your Google Calendar')
-			.addButton(button => button
-				.setButtonText('Authorize Google Calendar')
-				.onClick(async () => {
-					await this.plugin.handleGoogleAuth();
-				}));
+			sync.on('status-change', () => {
+				if (sync.syncStatus?.toLowerCase() !== 'fully synced') return;
+				if (done) return;
+				done = true;
+				window.clearTimeout(initialDelay);
+				resolve();
+			});
+		});
+	}
 
-		const authStatus = this.plugin.settings.googleAccessToken ? 'Authorized ✓' : 'Not authorized';
-		new Setting(containerEl)
-			.setName('Authorization status')
-			.setDesc(`Current status: ${authStatus}`);
+	private rebuildServices(): void {
+		this.noteManager = new NoteManager(this.app, this.settings);
+		this.syncEngine = new SyncEngine(
+			this.app,
+			this.api,
+			this.noteManager,
+			this.templateEngine,
+			() => this.settings,
+			() => this.saveSettings()
+		);
+		this.twoWaySync = new TwoWaySyncHandler(
+			this.app,
+			this.api,
+			this.noteManager,
+			() => this.settings,
+			() => this.syncEngine.syncing
+		);
+		this.syncEngine.onNoteUpserted = (eventId, snapshot) => {
+			this.twoWaySync.updateSnapshot(eventId, snapshot);
+		};
+		if (this.settings.autoSyncInterval > 0) {
+			this.syncEngine.startAutoSync();
+		}
 	}
 }

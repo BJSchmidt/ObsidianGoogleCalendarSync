@@ -1,6 +1,28 @@
-import { calendar_v3, google, tasks_v1 } from "googleapis";
+import { calendar_v3, google } from "googleapis";
 import { OAuthServer, OAuthCredentials } from "./oauthServer";
 import { Credentials } from "google-auth-library";
+import { CalendarFetcher } from "./calendarFetcher";
+
+/** Simple retry with exponential backoff for transient API errors */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			return await fn();
+		} catch (err: any) {
+			lastError = err;
+			const status = err?.code ?? err?.status ?? err?.response?.status;
+			// Only retry on transient errors (network, rate limit, server errors)
+			if (status && status < 500 && status !== 429) throw err;
+			if (attempt < maxRetries) {
+				const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+				await new Promise(r => setTimeout(r, delay));
+			}
+		}
+	}
+	throw lastError;
+}
+
 export interface GoogleCalendarCredentials {
 	clientId: string;
 	clientSecret: string;
@@ -8,17 +30,12 @@ export interface GoogleCalendarCredentials {
 	refreshToken?: string;
 }
 
-export interface CalendarData {
-	events: calendar_v3.Schema$Events | null;
-	tasks: tasks_v1.Schema$Tasks | null;
-}
-
 export class GoogleCalendarAPI {
 	private credentials: GoogleCalendarCredentials;
 	private calendar: calendar_v3.Calendar;
-	private tasks: tasks_v1.Tasks;
 	private oauthServer: OAuthServer;
 	private onTokensUpdated?: (tokens: Credentials) => void;
+	public fetcher: CalendarFetcher;
 
 	constructor(
 		credentials: GoogleCalendarCredentials,
@@ -43,7 +60,6 @@ export class GoogleCalendarAPI {
 				refresh_token: this.credentials.refreshToken,
 			});
 
-			// Set up automatic token refresh
 			auth.on("tokens", (tokens) => {
 				if (tokens.refresh_token) {
 					this.credentials.refreshToken = tokens.refresh_token;
@@ -51,110 +67,76 @@ export class GoogleCalendarAPI {
 				if (tokens.access_token) {
 					this.credentials.accessToken = tokens.access_token;
 				}
-				// Notify that tokens have been updated
 				this.onTokensUpdated?.(tokens);
 			});
 		}
 
 		this.calendar = google.calendar({ version: "v3", auth });
-		this.tasks = google.tasks({ version: "v1", auth });
+		this.fetcher = new CalendarFetcher(this.calendar);
 	}
 
-	async getEventsForDate(
-		date: string
-	): Promise<calendar_v3.Schema$Events | null> {
+	async createEvent(
+		calendarId: string,
+		event: calendar_v3.Schema$Event
+	): Promise<calendar_v3.Schema$Event | null> {
 		try {
-			if (!this.credentials.clientId || !this.credentials.clientSecret) {
-				throw new Error(
-					"Google Calendar API credentials not configured"
-				);
-			}
-
-			const startOfDay = new Date(date);
-			startOfDay.setHours(0, 0, 0, 0);
-
-			const endOfDay = new Date(date);
-			endOfDay.setHours(23, 59, 59, 999);
-
-			const response = await this.calendar.events.list({
-				calendarId: "primary",
-				timeMin: startOfDay.toISOString(),
-				timeMax: endOfDay.toISOString(),
-				singleEvents: true,
-				orderBy: "startTime",
-			});
-
+			const response = await withRetry(() =>
+				this.calendar.events.insert({ calendarId, requestBody: event })
+			);
 			return response.data;
 		} catch (error) {
-			console.error("Error fetching calendar events:", error);
+			console.error(`Error creating event in calendar ${calendarId}:`, error);
 			return null;
 		}
 	}
 
-	async getTasksForDate(date: string): Promise<tasks_v1.Schema$Tasks | null> {
+	async updateEvent(
+		calendarId: string,
+		eventId: string,
+		patch: calendar_v3.Schema$Event
+	): Promise<calendar_v3.Schema$Event> {
 		try {
-			if (!this.credentials.clientId || !this.credentials.clientSecret) {
-				throw new Error(
-					"Google Calendar API credentials not configured"
-				);
-			}
-			const taskListsResponse = await this.tasks.tasklists.list();
-			const taskLists = taskListsResponse.data.items || [];
-			
-			const targetDate = new Date(date);
-			targetDate.setHours(23, 59, 59, 999); 
+			const response = await withRetry(() =>
+				this.calendar.events.patch({ calendarId, eventId, requestBody: patch })
+			);
+			return response.data;
+		} catch (error: any) {
+			const msg = error?.response?.data?.error?.message ?? error?.message ?? String(error);
+			console.error(`Error updating event ${eventId} in calendar ${calendarId}:`, error);
+			throw new Error(msg);
+		}
+	}
 
-			const oneYearAgo = new Date(targetDate);
-			oneYearAgo.setDate(oneYearAgo.getDate() - 365);
-			
-			const taskPromises = taskLists.map(async (taskList) => {
-				if (!taskList.id) return [];
-				try {
-					const response = await this.tasks.tasks.list({
-						tasklist: taskList.id,
-						showCompleted: false, 
-						maxResults: 100,
-					});
-					const tasks = response.data.items || [];
-					const filteredTasks = tasks.filter(task => {
-						if (!task.due) return true;
-						const taskDueDate = new Date(task.due);
-						return taskDueDate >= oneYearAgo && taskDueDate <= targetDate; // align with google calendar behavior
-					});
-					return filteredTasks;
-				} catch (error) {
-					console.error(
-						`Error fetching tasks from list ${taskList.title}:`,
-						error
-					);
-					return [];
-				}
+	async getEvent(calendarId: string, eventId: string): Promise<calendar_v3.Schema$Event> {
+		const response = await withRetry(() =>
+			this.calendar.events.get({ calendarId, eventId })
+		);
+		return response.data;
+	}
+
+	async deleteEvent(calendarId: string, eventId: string): Promise<void> {
+		try {
+			await withRetry(() =>
+				this.calendar.events.delete({ calendarId, eventId })
+			);
+		} catch (error: any) {
+			const msg = error?.response?.data?.error?.message ?? error?.message ?? String(error);
+			console.error(`Error deleting event ${eventId} in calendar ${calendarId}:`, error);
+			throw new Error(msg);
+		}
+	}
+
+	async cancelEvent(calendarId: string, eventId: string): Promise<void> {
+		try {
+			await this.calendar.events.patch({
+				calendarId,
+				eventId,
+				requestBody: { status: 'cancelled' },
 			});
-			const taskResults = await Promise.all(taskPromises);
-			const allTasks = taskResults.flat();
-			return {
-				kind: "tasks#tasks",
-				items: allTasks,
-			};
-		} catch (error) {
-			console.error("Error fetching tasks:", error);
-			return null;
-		}
-	}
-
-	async getEventsAndTasksForDate(date: string): Promise<CalendarData | null> {
-		try {
-			const [events, tasks] = await Promise.all([
-				this.getEventsForDate(date),
-				this.getTasksForDate(date),
-			]);
-
-			return {
-				events: events,
-				tasks: tasks,
-			};
-		} catch (error) {
-			return null;
+		} catch (error: any) {
+			const msg = error?.response?.data?.error?.message ?? error?.message ?? String(error);
+			console.error(`Error cancelling event ${eventId} in calendar ${calendarId}:`, error);
+			throw new Error(msg);
 		}
 	}
 
@@ -164,10 +146,7 @@ export class GoogleCalendarAPI {
 				clientId: this.credentials.clientId,
 				clientSecret: this.credentials.clientSecret,
 			};
-
-			const tokens = await this.oauthServer.startOAuthFlow(
-				oauthCredentials
-			);
+			const tokens = await this.oauthServer.startOAuthFlow(oauthCredentials);
 			return tokens;
 		} catch (error) {
 			console.error("OAuth flow error:", error);

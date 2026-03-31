@@ -1,16 +1,16 @@
-/* Google Calendar Importer Plugin Styles */
+/* Google Calendar Sync Plugin Styles */
 
-/* Date Input Modal Styles */
-.google-calendar-modal .date-input {
+/* Custom-properties textarea embedded in the calendar toggle setting row */
+.gcal-sync-custom-props-ta {
 	width: 100%;
 	margin-top: 8px;
-}
-
-.google-calendar-modal .button-container {
-	margin-top: 20px;
-	text-align: right;
-}
-
-.google-calendar-modal .cancel-button {
-	margin-right: 10px;
+	resize: vertical;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	padding: 4px 6px;
+	color: var(--text-normal);
+	box-sizing: border-box;
 }
