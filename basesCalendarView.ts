@@ -1,27 +1,49 @@
 import {
 	BasesView,
-	BasesPropertyOption,
 	BasesAllOptions,
 	BasesViewConfig,
 	BasesEntry,
 	QueryController,
 	Value,
-	DateValue,
 	NullValue,
 	TFile,
 } from 'obsidian';
+import Calendar from '@toast-ui/calendar';
+import type { EventObject, Options } from '@toast-ui/calendar';
+
+// TUI Calendar CSS is injected at runtime via loadTuiCss() called from main.ts onload().
+// esbuild's `loader: { ".css": "text" }` inlines the CSS as a string.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const TUI_CSS: string = require('@toast-ui/calendar/dist/toastui-calendar.min.css');
+
+let tuiCssInjected = false;
+export function loadTuiCss(): void {
+	if (tuiCssInjected) return;
+	tuiCssInjected = true;
+	const style = document.createElement('style');
+	style.id = 'cal-tui-calendar-css';
+	style.textContent = TUI_CSS;
+	document.head.appendChild(style);
+}
+
+export function unloadTuiCss(): void {
+	document.getElementById('cal-tui-calendar-css')?.remove();
+	tuiCssInjected = false;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 interface CalendarEvent {
+	id: string;
 	title: string;
-	date: string;      // YYYY-MM-DD
+	date: string;       // YYYY-MM-DD
 	startTime: string;  // HH:MM or ''
 	endTime: string;    // HH:MM or ''
 	allDay: boolean;
 	file: TFile;
+	calendarName: string;
 }
 
 function valueToString(v: Value | null): string {
@@ -36,26 +58,58 @@ function extractEvents(view: BasesView): CalendarEvent[] {
 	const startTimeProp = config.getAsPropertyId('startTimeProp') ?? 'note.startTime';
 	const endTimeProp = config.getAsPropertyId('endTimeProp') ?? 'note.endTime';
 	const allDayProp = config.getAsPropertyId('allDayProp') ?? 'note.allDay';
+	const calendarProp = config.getAsPropertyId('calendarProp') ?? 'note.cal-calendar';
 
 	const events: CalendarEvent[] = [];
 	for (const entry of view.data.data) {
 		const dateVal = valueToString(entry.getValue(dateProp));
 		if (!dateVal) continue;
 
-		// Normalize date to YYYY-MM-DD (handles DateValue toString which may include time)
 		const dateStr = dateVal.slice(0, 10);
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
 		events.push({
+			id: entry.file.path,
 			title: valueToString(entry.getValue(titleProp)) || entry.file.basename,
 			date: dateStr,
 			startTime: valueToString(entry.getValue(startTimeProp)),
 			endTime: valueToString(entry.getValue(endTimeProp)),
 			allDay: valueToString(entry.getValue(allDayProp)) === 'true',
 			file: entry.file,
+			calendarName: valueToString(entry.getValue(calendarProp)),
 		});
 	}
 	return events;
+}
+
+function toTuiEvents(events: CalendarEvent[]): EventObject[] {
+	return events.map(ev => {
+		if (ev.allDay || !ev.startTime) {
+			return {
+				id: ev.id,
+				calendarId: 'default',
+				title: ev.title,
+				start: ev.date,
+				end: ev.date,
+				isAllday: true,
+				category: 'allday',
+				raw: { file: ev.file },
+			};
+		}
+
+		const start = `${ev.date}T${ev.startTime}`;
+		const end = ev.endTime ? `${ev.date}T${ev.endTime}` : start;
+		return {
+			id: ev.id,
+			calendarId: 'default',
+			title: ev.title,
+			start,
+			end,
+			isAllday: false,
+			category: 'time',
+			raw: { file: ev.file },
+		};
+	});
 }
 
 function getViewOptions(config: BasesViewConfig): BasesAllOptions[] {
@@ -90,332 +144,237 @@ function getViewOptions(config: BasesViewConfig): BasesAllOptions[] {
 			displayName: 'All-day property',
 			default: 'allDay',
 		},
+		{
+			type: 'property' as const,
+			key: 'calendarProp',
+			displayName: 'Calendar name property',
+			default: 'cal-calendar',
+		},
 	];
 }
 
-// Group events by date string
-function groupByDate(events: CalendarEvent[]): Map<string, CalendarEvent[]> {
-	const map = new Map<string, CalendarEvent[]>();
-	for (const ev of events) {
-		const list = map.get(ev.date) ?? [];
-		list.push(ev);
-		map.set(ev.date, list);
-	}
-	// Sort each day's events by start time
-	for (const [, list] of map) {
-		list.sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00'));
-	}
-	return map;
+// ---------------------------------------------------------------------------
+// Shared TUI Calendar wrapper for Bases views
+// ---------------------------------------------------------------------------
+
+function getObsidianTheme(): 'dark' | 'light' {
+	return document.body.classList.contains('theme-dark') ? 'dark' : 'light';
 }
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTH_NAMES = [
-	'January', 'February', 'March', 'April', 'May', 'June',
-	'July', 'August', 'September', 'October', 'November', 'December',
-];
+function getTuiTheme(): Options['theme'] {
+	const isDark = getObsidianTheme() === 'dark';
+	const style = getComputedStyle(document.body);
+	const bgPrimary = style.getPropertyValue('--background-primary').trim() || (isDark ? '#1e1e1e' : '#ffffff');
+	const bgSecondary = style.getPropertyValue('--background-secondary').trim() || (isDark ? '#262626' : '#f5f5f5');
+	const textNormal = style.getPropertyValue('--text-normal').trim() || (isDark ? '#dcddde' : '#1a1a1a');
+	const textMuted = style.getPropertyValue('--text-muted').trim() || (isDark ? '#999' : '#666');
+	const accent = style.getPropertyValue('--interactive-accent').trim() || '#7b6cd9';
+	const border = style.getPropertyValue('--background-modifier-border').trim() || (isDark ? '#333' : '#ddd');
 
-function formatDateKey(y: number, m: number, d: number): string {
-	return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+	return {
+		common: {
+			backgroundColor: bgPrimary,
+			border: `1px solid ${border}`,
+			holiday: { color: textNormal },
+			saturday: { color: textNormal },
+			dayName: { color: textMuted },
+			today: { color: accent },
+			gridSelection: {
+				backgroundColor: accent,
+				border: `1px solid ${accent}`,
+			},
+		},
+		week: {
+			dayName: {
+				borderLeft: `1px solid ${border}`,
+				borderTop: `1px solid ${border}`,
+				borderBottom: `1px solid ${border}`,
+				backgroundColor: bgSecondary,
+			},
+			dayGrid: {
+				borderRight: `1px solid ${border}`,
+				backgroundColor: bgPrimary,
+			},
+			dayGridLeft: {
+				borderRight: `1px solid ${border}`,
+				backgroundColor: bgSecondary,
+				width: '60px',
+			},
+			timeGrid: { borderRight: `1px solid ${border}` },
+			timeGridLeft: {
+				borderRight: `1px solid ${border}`,
+				backgroundColor: bgSecondary,
+				width: '60px',
+			},
+			timeGridHalfHourLine: { borderBottom: `1px dotted ${border}` },
+			timeGridHourLine: { borderBottom: `1px solid ${border}` },
+			nowIndicatorLabel: { color: accent },
+			nowIndicatorPast: { border: `1px dashed ${accent}` },
+			nowIndicatorBullet: { backgroundColor: accent },
+			nowIndicatorToday: { border: `1px solid ${accent}` },
+			pastTime: { color: textMuted },
+			futureTime: { color: textNormal },
+			panelResizer: { border: `1px solid ${border}` },
+			gridSelection: { color: accent },
+		},
+		month: {
+			dayExceptThisMonth: { color: textMuted },
+			dayName: {
+				borderLeft: `1px solid ${border}`,
+				backgroundColor: bgSecondary,
+			},
+			holidayExceptThisMonth: { color: textMuted },
+			moreView: {
+				backgroundColor: bgPrimary,
+				border: `1px solid ${border}`,
+				boxShadow: `0 2px 6px rgba(0,0,0,0.2)`,
+				width: 220,
+				height: 200,
+			},
+			moreViewTitle: { backgroundColor: bgSecondary },
+			weekend: { backgroundColor: bgPrimary },
+		},
+	};
 }
 
-function todayKey(): string {
-	const d = new Date();
-	return formatDateKey(d.getFullYear(), d.getMonth(), d.getDate());
-}
+abstract class BaseTuiCalendarView extends BasesView {
+	protected containerEl: HTMLElement;
+	protected calendar: Calendar | null = null;
+	protected navEl: HTMLElement;
+	protected calendarEl: HTMLElement;
+	protected titleEl: HTMLElement;
 
-// Render a single event pill
-function renderEventPill(container: HTMLElement, ev: CalendarEvent, openFile: (file: TFile) => void): void {
-	const pill = container.createDiv({ cls: 'cal-view-event' });
-	if (ev.startTime && !ev.allDay) {
-		pill.createSpan({ cls: 'cal-view-event-time', text: ev.startTime });
+	// Map of file paths for click handling
+	private fileMap = new Map<string, TFile>();
+
+	abstract getDefaultView(): 'month' | 'week' | 'day';
+
+	constructor(controller: QueryController, containerEl: HTMLElement) {
+		super(controller);
+		this.containerEl = containerEl;
 	}
-	pill.createSpan({ cls: 'cal-view-event-title', text: ev.title });
-	pill.addEventListener('click', (e) => {
-		e.stopPropagation();
-		openFile(ev.file);
-	});
+
+	onload(): void {
+		this.containerEl.addClass('cal-view-container');
+
+		// Navigation bar (we build our own since TUI doesn't include one)
+		this.navEl = this.containerEl.createDiv({ cls: 'cal-view-header' });
+		const prevBtn = this.navEl.createEl('button', { cls: 'cal-view-nav-btn', text: '‹' });
+		prevBtn.addEventListener('click', () => { this.calendar?.prev(); this.updateTitle(); });
+		this.titleEl = this.navEl.createSpan({ cls: 'cal-view-title' });
+		const nextBtn = this.navEl.createEl('button', { cls: 'cal-view-nav-btn', text: '›' });
+		nextBtn.addEventListener('click', () => { this.calendar?.next(); this.updateTitle(); });
+		const todayBtn = this.navEl.createEl('button', { cls: 'cal-view-today-btn', text: 'Today' });
+		todayBtn.addEventListener('click', () => { this.calendar?.today(); this.updateTitle(); });
+
+		// Calendar container
+		this.calendarEl = this.containerEl.createDiv({ cls: 'cal-view-tui-container' });
+
+		this.calendar = new Calendar(this.calendarEl, {
+			defaultView: this.getDefaultView(),
+			usageStatistics: false,
+			isReadOnly: true,
+			useFormPopup: false,
+			useDetailPopup: false,
+			theme: getTuiTheme(),
+			week: {
+				startDayOfWeek: 0,
+				taskView: false,
+				eventView: ['allday', 'time'],
+			},
+			month: {
+				startDayOfWeek: 0,
+			},
+		});
+
+		// Handle event clicks — open the source note
+		this.calendar.on('clickEvent', ({ event }) => {
+			const file = this.fileMap.get(event.id);
+			if (file) {
+				this.app.workspace.openLinkText(file.path, '', false);
+			}
+		});
+
+		this.updateTitle();
+	}
+
+	onunload(): void {
+		this.calendar?.destroy();
+		this.calendar = null;
+	}
+
+	onDataUpdated(): void {
+		if (!this.calendar) return;
+
+		const events = extractEvents(this);
+
+		// Build file map for click handling
+		this.fileMap.clear();
+		for (const ev of events) {
+			this.fileMap.set(ev.id, ev.file);
+		}
+
+		this.calendar.clear();
+		this.calendar.createEvents(toTuiEvents(events));
+		this.updateTitle();
+	}
+
+	private updateTitle(): void {
+		if (!this.calendar) return;
+		const date = this.calendar.getDate().toDate();
+		const monthNames = [
+			'January', 'February', 'March', 'April', 'May', 'June',
+			'July', 'August', 'September', 'October', 'November', 'December',
+		];
+
+		const view = this.getDefaultView();
+		if (view === 'month') {
+			this.titleEl.setText(`${monthNames[date.getMonth()]} ${date.getFullYear()}`);
+		} else {
+			const start = this.calendar.getDateRangeStart().toDate();
+			const end = this.calendar.getDateRangeEnd().toDate();
+			const startLabel = `${monthNames[start.getMonth()]} ${start.getDate()}`;
+			const endLabel = start.getMonth() === end.getMonth()
+				? `${end.getDate()}, ${end.getFullYear()}`
+				: `${monthNames[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+			this.titleEl.setText(`${startLabel} – ${endLabel}`);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
-// Month Calendar View
+// Concrete view classes
 // ---------------------------------------------------------------------------
 
-export class MonthCalendarView extends BasesView {
+export class MonthCalendarView extends BaseTuiCalendarView {
 	type = 'cal-month';
-	private containerEl: HTMLElement;
-	private currentYear: number;
-	private currentMonth: number; // 0-indexed
-
-	constructor(controller: QueryController, containerEl: HTMLElement) {
-		super(controller);
-		this.containerEl = containerEl;
-		const now = new Date();
-		this.currentYear = now.getFullYear();
-		this.currentMonth = now.getMonth();
-	}
-
-	onDataUpdated(): void {
-		this.render();
-	}
-
-	private render(): void {
-		this.containerEl.empty();
-		this.containerEl.addClass('cal-view-month');
-
-		const events = extractEvents(this);
-		const byDate = groupByDate(events);
-		const today = todayKey();
-
-		// Header with nav
-		const header = this.containerEl.createDiv({ cls: 'cal-view-header' });
-		const prevBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '‹' });
-		prevBtn.addEventListener('click', () => { this.prevMonth(); });
-		header.createSpan({ cls: 'cal-view-title', text: `${MONTH_NAMES[this.currentMonth]} ${this.currentYear}` });
-		const nextBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '›' });
-		nextBtn.addEventListener('click', () => { this.nextMonth(); });
-		const todayBtn = header.createEl('button', { cls: 'cal-view-today-btn', text: 'Today' });
-		todayBtn.addEventListener('click', () => {
-			const now = new Date();
-			this.currentYear = now.getFullYear();
-			this.currentMonth = now.getMonth();
-			this.render();
-		});
-
-		// Day-of-week headers
-		const grid = this.containerEl.createDiv({ cls: 'cal-view-grid cal-view-grid-month' });
-		for (const day of DAY_NAMES) {
-			grid.createDiv({ cls: 'cal-view-day-header', text: day });
-		}
-
-		// Calendar cells
-		const firstDay = new Date(this.currentYear, this.currentMonth, 1).getDay();
-		const daysInMonth = new Date(this.currentYear, this.currentMonth + 1, 0).getDate();
-		const daysInPrevMonth = new Date(this.currentYear, this.currentMonth, 0).getDate();
-
-		// Previous month padding
-		for (let i = firstDay - 1; i >= 0; i--) {
-			const d = daysInPrevMonth - i;
-			const prevMonth = this.currentMonth - 1;
-			const prevYear = prevMonth < 0 ? this.currentYear - 1 : this.currentYear;
-			const pm = prevMonth < 0 ? 11 : prevMonth;
-			const key = formatDateKey(prevYear, pm, d);
-			this.renderDayCell(grid, d, key, byDate.get(key) ?? [], true, key === today);
-		}
-
-		// Current month days
-		for (let d = 1; d <= daysInMonth; d++) {
-			const key = formatDateKey(this.currentYear, this.currentMonth, d);
-			this.renderDayCell(grid, d, key, byDate.get(key) ?? [], false, key === today);
-		}
-
-		// Next month padding (fill to complete last row)
-		const totalCells = firstDay + daysInMonth;
-		const remaining = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
-		for (let d = 1; d <= remaining; d++) {
-			const nextMonth = this.currentMonth + 1;
-			const nextYear = nextMonth > 11 ? this.currentYear + 1 : this.currentYear;
-			const nm = nextMonth > 11 ? 0 : nextMonth;
-			const key = formatDateKey(nextYear, nm, d);
-			this.renderDayCell(grid, d, key, byDate.get(key) ?? [], true, key === today);
-		}
-	}
-
-	private renderDayCell(
-		grid: HTMLElement, dayNum: number, dateKey: string,
-		events: CalendarEvent[], isOtherMonth: boolean, isToday: boolean
-	): void {
-		const cls = ['cal-view-day-cell'];
-		if (isOtherMonth) cls.push('cal-view-other-month');
-		if (isToday) cls.push('cal-view-today');
-		const cell = grid.createDiv({ cls: cls.join(' ') });
-
-		cell.createDiv({ cls: 'cal-view-day-number', text: String(dayNum) });
-
-		const eventsContainer = cell.createDiv({ cls: 'cal-view-day-events' });
-		const maxShow = 3;
-		for (let i = 0; i < Math.min(events.length, maxShow); i++) {
-			renderEventPill(eventsContainer, events[i], (f) => this.app.workspace.openLinkText(f.path, '', false));
-		}
-		if (events.length > maxShow) {
-			eventsContainer.createDiv({ cls: 'cal-view-more', text: `+${events.length - maxShow} more` });
-		}
-	}
-
-	private prevMonth(): void {
-		this.currentMonth--;
-		if (this.currentMonth < 0) { this.currentMonth = 11; this.currentYear--; }
-		this.render();
-	}
-
-	private nextMonth(): void {
-		this.currentMonth++;
-		if (this.currentMonth > 11) { this.currentMonth = 0; this.currentYear++; }
-		this.render();
-	}
+	getDefaultView() { return 'month' as const; }
 }
 
-// ---------------------------------------------------------------------------
-// Week Calendar View
-// ---------------------------------------------------------------------------
-
-export class WeekCalendarView extends BasesView {
+export class WeekCalendarView extends BaseTuiCalendarView {
 	type = 'cal-week';
-	private containerEl: HTMLElement;
-	private weekStart: Date; // Sunday of the current week
-
-	constructor(controller: QueryController, containerEl: HTMLElement) {
-		super(controller);
-		this.containerEl = containerEl;
-		this.weekStart = this.getWeekStart(new Date());
-	}
-
-	onDataUpdated(): void {
-		this.render();
-	}
-
-	private getWeekStart(date: Date): Date {
-		const d = new Date(date);
-		d.setDate(d.getDate() - d.getDay());
-		d.setHours(0, 0, 0, 0);
-		return d;
-	}
-
-	private render(): void {
-		this.containerEl.empty();
-		this.containerEl.addClass('cal-view-week');
-
-		const events = extractEvents(this);
-		const byDate = groupByDate(events);
-		const today = todayKey();
-
-		// Header with nav
-		const header = this.containerEl.createDiv({ cls: 'cal-view-header' });
-		const prevBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '‹' });
-		prevBtn.addEventListener('click', () => { this.prevWeek(); });
-
-		const weekEnd = new Date(this.weekStart);
-		weekEnd.setDate(weekEnd.getDate() + 6);
-		const startLabel = `${MONTH_NAMES[this.weekStart.getMonth()]} ${this.weekStart.getDate()}`;
-		const endLabel = this.weekStart.getMonth() === weekEnd.getMonth()
-			? `${weekEnd.getDate()}, ${weekEnd.getFullYear()}`
-			: `${MONTH_NAMES[weekEnd.getMonth()]} ${weekEnd.getDate()}, ${weekEnd.getFullYear()}`;
-		header.createSpan({ cls: 'cal-view-title', text: `${startLabel} – ${endLabel}` });
-
-		const nextBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '›' });
-		nextBtn.addEventListener('click', () => { this.nextWeek(); });
-		const todayBtn = header.createEl('button', { cls: 'cal-view-today-btn', text: 'Today' });
-		todayBtn.addEventListener('click', () => {
-			this.weekStart = this.getWeekStart(new Date());
-			this.render();
-		});
-
-		// Day columns
-		const grid = this.containerEl.createDiv({ cls: 'cal-view-grid cal-view-grid-week' });
-		for (let i = 0; i < 7; i++) {
-			const d = new Date(this.weekStart);
-			d.setDate(d.getDate() + i);
-			const key = formatDateKey(d.getFullYear(), d.getMonth(), d.getDate());
-			const isToday = key === today;
-
-			const col = grid.createDiv({ cls: `cal-view-week-col${isToday ? ' cal-view-today' : ''}` });
-			col.createDiv({
-				cls: 'cal-view-week-day-header',
-				text: `${DAY_NAMES[d.getDay()]} ${d.getDate()}`,
-			});
-
-			const eventsContainer = col.createDiv({ cls: 'cal-view-day-events' });
-			for (const ev of byDate.get(key) ?? []) {
-				renderEventPill(eventsContainer, ev, (f) => this.app.workspace.openLinkText(f.path, '', false));
-			}
-		}
-	}
-
-	private prevWeek(): void {
-		this.weekStart.setDate(this.weekStart.getDate() - 7);
-		this.render();
-	}
-
-	private nextWeek(): void {
-		this.weekStart.setDate(this.weekStart.getDate() + 7);
-		this.render();
-	}
+	getDefaultView() { return 'week' as const; }
 }
 
-// ---------------------------------------------------------------------------
-// 3-Day Calendar View
-// ---------------------------------------------------------------------------
-
-export class ThreeDayCalendarView extends BasesView {
+export class ThreeDayCalendarView extends BaseTuiCalendarView {
 	type = 'cal-3day';
-	private containerEl: HTMLElement;
-	private startDate: Date;
 
-	constructor(controller: QueryController, containerEl: HTMLElement) {
-		super(controller);
-		this.containerEl = containerEl;
-		this.startDate = new Date();
-		this.startDate.setHours(0, 0, 0, 0);
-	}
-
-	onDataUpdated(): void {
-		this.render();
-	}
-
-	private render(): void {
-		this.containerEl.empty();
-		this.containerEl.addClass('cal-view-3day');
-
-		const events = extractEvents(this);
-		const byDate = groupByDate(events);
-		const today = todayKey();
-
-		// Header with nav
-		const header = this.containerEl.createDiv({ cls: 'cal-view-header' });
-		const prevBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '‹' });
-		prevBtn.addEventListener('click', () => { this.shift(-3); });
-
-		const endDate = new Date(this.startDate);
-		endDate.setDate(endDate.getDate() + 2);
-		const startLabel = `${MONTH_NAMES[this.startDate.getMonth()]} ${this.startDate.getDate()}`;
-		const endLabel = this.startDate.getMonth() === endDate.getMonth()
-			? `${endDate.getDate()}, ${endDate.getFullYear()}`
-			: `${MONTH_NAMES[endDate.getMonth()]} ${endDate.getDate()}, ${endDate.getFullYear()}`;
-		header.createSpan({ cls: 'cal-view-title', text: `${startLabel} – ${endLabel}` });
-
-		const nextBtn = header.createEl('button', { cls: 'cal-view-nav-btn', text: '›' });
-		nextBtn.addEventListener('click', () => { this.shift(3); });
-		const todayBtn = header.createEl('button', { cls: 'cal-view-today-btn', text: 'Today' });
-		todayBtn.addEventListener('click', () => {
-			this.startDate = new Date();
-			this.startDate.setHours(0, 0, 0, 0);
-			this.render();
-		});
-
-		// 3 day columns
-		const grid = this.containerEl.createDiv({ cls: 'cal-view-grid cal-view-grid-3day' });
-		for (let i = 0; i < 3; i++) {
-			const d = new Date(this.startDate);
-			d.setDate(d.getDate() + i);
-			const key = formatDateKey(d.getFullYear(), d.getMonth(), d.getDate());
-			const isToday = key === today;
-
-			const col = grid.createDiv({ cls: `cal-view-week-col${isToday ? ' cal-view-today' : ''}` });
-			col.createDiv({
-				cls: 'cal-view-week-day-header',
-				text: `${DAY_NAMES[d.getDay()]} ${MONTH_NAMES[d.getMonth()].slice(0, 3)} ${d.getDate()}`,
+	onload(): void {
+		super.onload();
+		// Configure for 3-day view by setting visibleWeeksCount on month
+		// TUI doesn't have a native 3-day, so we use week view with narrowed range
+		if (this.calendar) {
+			this.calendar.setOptions({
+				week: {
+					startDayOfWeek: new Date().getDay(),
+					taskView: false,
+					eventView: ['allday', 'time'],
+				},
 			});
-
-			const eventsContainer = col.createDiv({ cls: 'cal-view-day-events' });
-			for (const ev of byDate.get(key) ?? []) {
-				renderEventPill(eventsContainer, ev, (f) => this.app.workspace.openLinkText(f.path, '', false));
-			}
 		}
 	}
 
-	private shift(days: number): void {
-		this.startDate.setDate(this.startDate.getDate() + days);
-		this.render();
-	}
+	getDefaultView() { return 'week' as const; }
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import { SyncEngine } from './syncEngine';
 import { TwoWaySyncHandler } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
 import { CalendarEventModal } from './createEventModal';
-import { MonthCalendarView, WeekCalendarView, ThreeDayCalendarView, getViewOptions } from './basesCalendarView';
+import { MonthCalendarView, WeekCalendarView, ThreeDayCalendarView, getViewOptions, loadTuiCss, unloadTuiCss } from './basesCalendarView';
 import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 
 export default class GoogleCalendarSync extends Plugin {
@@ -127,7 +127,9 @@ export default class GoogleCalendarSync extends Plugin {
 		// Settings tab
 		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
 
-		// Bases calendar views
+		// Bases calendar views — inject TUI Calendar CSS
+		loadTuiCss();
+
 		this.registerBasesView('cal-month', {
 			name: 'Month Calendar',
 			icon: 'calendar',
@@ -201,6 +203,7 @@ export default class GoogleCalendarSync extends Plugin {
 		this.syncEngine?.stopAutoSync();
 		this.twoWaySync?.destroy();
 		this.api?.cleanup();
+		unloadTuiCss();
 	}
 
 	async loadSettings() {

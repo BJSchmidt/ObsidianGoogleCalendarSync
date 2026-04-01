@@ -92,7 +92,13 @@
 
 /* ===== Bases Calendar Views ===== */
 
-/* Shared header with nav buttons */
+.cal-view-container {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+/* Navigation header */
 .cal-view-header {
 	display: flex;
 	align-items: center;
@@ -142,139 +148,17 @@
 	background: var(--background-modifier-hover);
 }
 
-/* Month grid */
-.cal-view-grid-month {
-	display: grid;
-	grid-template-columns: repeat(7, 1fr);
-	gap: 1px;
-	background: var(--background-modifier-border);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
+/* TUI Calendar container */
+.cal-view-tui-container {
+	flex: 1;
+	min-height: 400px;
 }
 
-.cal-view-day-header {
-	text-align: center;
-	font-size: var(--font-ui-smaller);
-	font-weight: var(--font-semibold);
-	color: var(--text-muted);
-	padding: 4px;
-	background: var(--background-primary);
+/* Override TUI Calendar event colors to use Obsidian accent */
+.cal-view-tui-container .toastui-calendar-weekday-event-dot {
+	background-color: var(--interactive-accent) !important;
 }
 
-.cal-view-day-cell {
-	background: var(--background-primary);
-	min-height: 80px;
-	padding: 4px;
-	vertical-align: top;
-}
-
-.cal-view-other-month {
-	opacity: 0.4;
-}
-
-.cal-view-today {
-	background: var(--background-primary-alt);
-}
-
-.cal-view-today .cal-view-day-number {
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
-	border-radius: 50%;
-	width: 22px;
-	height: 22px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-}
-
-.cal-view-day-number {
-	font-size: var(--font-ui-small);
-	font-weight: var(--font-medium);
-	color: var(--text-normal);
-	margin-bottom: 2px;
-}
-
-.cal-view-day-events {
-	display: flex;
-	flex-direction: column;
-	gap: 1px;
-}
-
-/* Event pill */
-.cal-view-event {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	padding: 1px 4px;
-	border-radius: var(--radius-s);
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
-	font-size: var(--font-ui-smaller);
+.cal-view-tui-container .toastui-calendar-event {
 	cursor: pointer;
-	overflow: hidden;
-	white-space: nowrap;
-	text-overflow: ellipsis;
-}
-
-.cal-view-event:hover {
-	filter: brightness(1.1);
-}
-
-.cal-view-event-time {
-	font-weight: var(--font-semibold);
-	flex-shrink: 0;
-}
-
-.cal-view-event-title {
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.cal-view-more {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	padding: 1px 4px;
-	cursor: default;
-}
-
-/* Week / 3-day grid */
-.cal-view-grid-week {
-	display: grid;
-	grid-template-columns: repeat(7, 1fr);
-	gap: 1px;
-	background: var(--background-modifier-border);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	min-height: 300px;
-}
-
-.cal-view-grid-3day {
-	display: grid;
-	grid-template-columns: repeat(3, 1fr);
-	gap: 1px;
-	background: var(--background-modifier-border);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	min-height: 300px;
-}
-
-.cal-view-week-col {
-	background: var(--background-primary);
-	padding: 4px;
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-}
-
-.cal-view-week-day-header {
-	font-size: var(--font-ui-small);
-	font-weight: var(--font-semibold);
-	color: var(--text-muted);
-	padding-bottom: 4px;
-	border-bottom: 1px solid var(--background-modifier-border);
-	text-align: center;
-}
-
-.cal-view-today .cal-view-week-day-header {
-	color: var(--interactive-accent);
 }
