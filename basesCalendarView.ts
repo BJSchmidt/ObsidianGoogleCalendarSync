@@ -82,6 +82,28 @@ function extractEvents(view: BasesView): CalendarEvent[] {
 	return events;
 }
 
+// Normalize a time string to 24h HH:MM format.
+// Handles: "09:00", "9:00 AM", "2:30 PM", "14:00", etc.
+function normalizeTo24h(time: string): string {
+	const t = time.trim();
+	// Already 24h format (HH:MM or H:MM)
+	const match24 = t.match(/^(\d{1,2}):(\d{2})$/);
+	if (match24) {
+		return `${match24[1].padStart(2, '0')}:${match24[2]}`;
+	}
+	// 12h format (H:MM AM/PM)
+	const match12 = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+	if (match12) {
+		let h = parseInt(match12[1], 10);
+		const m = match12[2];
+		const period = match12[3].toUpperCase();
+		if (period === 'PM' && h !== 12) h += 12;
+		if (period === 'AM' && h === 12) h = 0;
+		return `${String(h).padStart(2, '0')}:${m}`;
+	}
+	return t;
+}
+
 function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 	return events.map(ev => {
 		if (ev.allDay || !ev.startTime) {
@@ -89,22 +111,22 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 				id: ev.id,
 				calendarId: 'default',
 				title: ev.title,
-				start: ev.date,
-				end: ev.date,
+				start: `${ev.date}T00:00:00`,
+				end: `${ev.date}T23:59:59`,
 				isAllday: true,
 				category: 'allday',
 				raw: { file: ev.file },
 			};
 		}
 
-		const start = `${ev.date}T${ev.startTime}`;
-		const end = ev.endTime ? `${ev.date}T${ev.endTime}` : start;
+		const startTime = normalizeTo24h(ev.startTime);
+		const endTime = ev.endTime ? normalizeTo24h(ev.endTime) : startTime;
 		return {
 			id: ev.id,
 			calendarId: 'default',
 			title: ev.title,
-			start,
-			end,
+			start: `${ev.date}T${startTime}:00`,
+			end: `${ev.date}T${endTime}:00`,
 			isAllday: false,
 			category: 'time',
 			raw: { file: ev.file },
