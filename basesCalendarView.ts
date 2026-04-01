@@ -104,12 +104,21 @@ function normalizeTo24h(time: string): string {
 	return t;
 }
 
+// Default palette for calendars without a configured color.
+// These are visually distinct and work in both light and dark themes.
+const DEFAULT_PALETTE = [
+	'#7b6cd9', '#4185f4', '#33a853', '#ea4335', '#fbbc04',
+	'#ff6d01', '#46bdc6', '#e67c73', '#8e24aa', '#039be5',
+];
+
 function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 	return events.map(ev => {
+		const calId = ev.calendarName || 'default';
+
 		if (ev.allDay || !ev.startTime) {
 			return {
 				id: ev.id,
-				calendarId: 'default',
+				calendarId: calId,
 				title: ev.title,
 				start: `${ev.date}T00:00:00`,
 				end: `${ev.date}T23:59:59`,
@@ -123,13 +132,36 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		const endTime = ev.endTime ? normalizeTo24h(ev.endTime) : startTime;
 		return {
 			id: ev.id,
-			calendarId: 'default',
+			calendarId: calId,
 			title: ev.title,
 			start: `${ev.date}T${startTime}:00`,
 			end: `${ev.date}T${endTime}:00`,
 			isAllday: false,
 			category: 'time',
 			raw: { file: ev.file },
+		};
+	});
+}
+
+// Build TUI CalendarInfo[] from the unique calendar names found in events,
+// using Google Calendar colors from cachedCalendars when available.
+function buildCalendarInfos(
+	events: CalendarEvent[],
+	cachedCalendars: Array<{ name: string; color: string }>,
+): Array<{ id: string; name: string; color: string; backgroundColor: string; borderColor: string; dragBackgroundColor: string }> {
+	const names = new Set(events.map(ev => ev.calendarName || 'default'));
+	const cachedByName = new Map(cachedCalendars.map(c => [c.name, c.color]));
+	let paletteIdx = 0;
+
+	return Array.from(names).map(name => {
+		const color = cachedByName.get(name) ?? DEFAULT_PALETTE[paletteIdx++ % DEFAULT_PALETTE.length];
+		return {
+			id: name,
+			name,
+			color: '#ffffff',
+			backgroundColor: color,
+			borderColor: color,
+			dragBackgroundColor: color,
 		};
 	});
 }
@@ -335,6 +367,13 @@ abstract class BaseTuiCalendarView extends BasesView {
 		for (const ev of events) {
 			this.fileMap.set(ev.id, ev.file);
 		}
+
+		// Get cached calendar colors from plugin settings (if available)
+		const pluginData = (this.app as any).plugins?.plugins?.['obsidian-google-calendar-sync'];
+		const cachedCalendars = pluginData?.settings?.cachedCalendars ?? [];
+
+		// Set per-calendar colors
+		this.calendar.setCalendars(buildCalendarInfos(events, cachedCalendars));
 
 		this.calendar.clear();
 		this.calendar.createEvents(toTuiEvents(events));
