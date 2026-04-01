@@ -6,24 +6,36 @@ import { AbstractInputSuggest, App, TFile, getAllTags } from 'obsidian';
 
 type SuggestFactory = (app: App, inputEl: HTMLInputElement, onSelect: (value: string) => void) => AbstractInputSuggest<string>;
 
+export interface MultiValueInputOptions {
+	placeholder?: string;
+	/** CSS class(es) for each chip. Use 'tag' to match Obsidian's native tag pills. */
+	chipClass?: string;
+	/** Prefix shown before each chip label (e.g. '#' for tags). */
+	chipPrefix?: string;
+}
+
 export class MultiValueInput {
 	private values: string[] = [];
 	private containerEl: HTMLElement;
 	private chipsEl: HTMLElement;
 	private inputEl: HTMLInputElement;
 	private suggest: AbstractInputSuggest<string>;
+	private chipClass: string;
+	private chipPrefix: string;
 
 	constructor(
 		private app: App,
 		parentEl: HTMLElement,
 		suggestFactory: SuggestFactory,
-		private placeholder: string = '',
+		options: MultiValueInputOptions = {},
 	) {
+		this.chipClass = options.chipClass ?? 'cal-multi-chip';
+		this.chipPrefix = options.chipPrefix ?? '';
 		this.containerEl = parentEl.createDiv({ cls: 'cal-multi-input' });
 		this.chipsEl = this.containerEl.createDiv({ cls: 'cal-multi-chips' });
 		this.inputEl = this.containerEl.createEl('input', {
 			type: 'text',
-			placeholder: this.placeholder,
+			placeholder: options.placeholder ?? '',
 			cls: 'cal-multi-text-input',
 		});
 
@@ -56,10 +68,13 @@ export class MultiValueInput {
 	private renderChips(): void {
 		this.chipsEl.empty();
 		for (const value of this.values) {
-			const chip = this.chipsEl.createDiv({ cls: 'cal-multi-chip' });
-			chip.createSpan({ text: value });
+			const chip = this.chipsEl.createEl('a', { cls: this.chipClass });
+			chip.createSpan({ text: this.chipPrefix + value });
 			const removeBtn = chip.createSpan({ cls: 'cal-multi-chip-remove', text: '×' });
-			removeBtn.addEventListener('click', () => this.removeValue(value));
+			removeBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				this.removeValue(value);
+			});
 		}
 	}
 

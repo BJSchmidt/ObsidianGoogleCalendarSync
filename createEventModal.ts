@@ -135,7 +135,7 @@ export class CalendarEventModal extends Modal {
 			this.app,
 			tagsSetting.controlEl,
 			(app, inputEl, onSelect) => new TagSuggest(app, inputEl, onSelect),
-			'Add tag...',
+			{ placeholder: 'Add tag...', chipClass: 'tag', chipPrefix: '#' },
 		);
 		if (this.formData.tags.length > 0) {
 			this.tagsInput.setValues(this.formData.tags);
@@ -147,7 +147,7 @@ export class CalendarEventModal extends Modal {
 			this.app,
 			peopleSetting.controlEl,
 			(app, inputEl, onSelect) => new PeopleSuggest(app, inputEl, onSelect),
-			'Add person...',
+			{ placeholder: 'Add person...' },
 		);
 		if (this.formData.people.length > 0) {
 			this.peopleInput.setValues(this.formData.people);
