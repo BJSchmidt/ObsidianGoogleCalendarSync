@@ -2,44 +2,51 @@ import { App, Modal, Notice, Setting } from 'obsidian';
 import { GoogleCalendarListEntry, NewEventFormData } from './types';
 import { MultiValueInput, TagSuggest, PeopleSuggest } from './multiSuggest';
 
-export class CreateEventModal extends Modal {
+export class CalendarEventModal extends Modal {
 	private formData: NewEventFormData;
 	private startTimeSetting: Setting;
 	private endTimeSetting: Setting;
 	private tagsInput: MultiValueInput;
 	private peopleInput: MultiValueInput;
 	private onSubmit: (data: NewEventFormData) => void;
+	private isEdit: boolean;
 
 	constructor(
 		app: App,
 		private enabledCalendars: GoogleCalendarListEntry[],
 		defaultCalendarId: string,
-		onSubmit: (data: NewEventFormData) => void
+		onSubmit: (data: NewEventFormData) => void,
+		initialData?: NewEventFormData,
 	) {
 		super(app);
 		this.onSubmit = onSubmit;
+		this.isEdit = !!initialData;
 
-		const defaultCal = enabledCalendars.find(c => c.id === defaultCalendarId)
-			|| enabledCalendars[0];
+		if (initialData) {
+			this.formData = { ...initialData };
+		} else {
+			const defaultCal = enabledCalendars.find(c => c.id === defaultCalendarId)
+				|| enabledCalendars[0];
 
-		this.formData = {
-			title: '',
-			date: new Date().toISOString().slice(0, 10),
-			startTime: '',
-			endTime: '',
-			allDay: false,
-			calendarId: defaultCal?.id ?? 'primary',
-			calendarName: defaultCal?.name ?? 'Primary',
-			location: '',
-			description: '',
-			tags: [],
-			people: [],
-		};
+			this.formData = {
+				title: '',
+				date: new Date().toISOString().slice(0, 10),
+				startTime: '',
+				endTime: '',
+				allDay: false,
+				calendarId: defaultCal?.id ?? 'primary',
+				calendarName: defaultCal?.name ?? 'Primary',
+				location: '',
+				description: '',
+				tags: [],
+				people: [],
+			};
+		}
 	}
 
 	onOpen(): void {
 		this.modalEl.addClass('cal-create-event-modal');
-		this.setTitle('New Calendar Event');
+		this.setTitle(this.isEdit ? 'Edit Calendar Event' : 'New Calendar Event');
 
 		const { contentEl } = this;
 
@@ -48,6 +55,7 @@ export class CreateEventModal extends Modal {
 			.setName('Title')
 			.addText(text => text
 				.setPlaceholder('Event title')
+				.setValue(this.formData.title)
 				.onChange(v => { this.formData.title = v; }));
 
 		// Date
@@ -79,6 +87,7 @@ export class CreateEventModal extends Modal {
 			.setName('Start time')
 			.addText(text => text
 				.setPlaceholder('HH:MM')
+				.setValue(this.formData.startTime)
 				.onChange(v => { this.formData.startTime = v; }));
 
 		// End time
@@ -86,7 +95,14 @@ export class CreateEventModal extends Modal {
 			.setName('End time')
 			.addText(text => text
 				.setPlaceholder('HH:MM')
+				.setValue(this.formData.endTime)
 				.onChange(v => { this.formData.endTime = v; }));
+
+		// Hide time fields if all-day
+		if (this.formData.allDay) {
+			this.startTimeSetting.settingEl.style.display = 'none';
+			this.endTimeSetting.settingEl.style.display = 'none';
+		}
 
 		// Calendar
 		if (this.enabledCalendars.length > 1) {
@@ -110,6 +126,7 @@ export class CreateEventModal extends Modal {
 			.setName('Location')
 			.addText(text => text
 				.setPlaceholder('Location')
+				.setValue(this.formData.location)
 				.onChange(v => { this.formData.location = v; }));
 
 		// Tags
@@ -120,6 +137,9 @@ export class CreateEventModal extends Modal {
 			(app, inputEl, onSelect) => new TagSuggest(app, inputEl, onSelect),
 			'Add tag...',
 		);
+		if (this.formData.tags.length > 0) {
+			this.tagsInput.setValues(this.formData.tags);
+		}
 
 		// People
 		const peopleSetting = new Setting(contentEl).setName('People');
@@ -129,18 +149,22 @@ export class CreateEventModal extends Modal {
 			(app, inputEl, onSelect) => new PeopleSuggest(app, inputEl, onSelect),
 			'Add person...',
 		);
+		if (this.formData.people.length > 0) {
+			this.peopleInput.setValues(this.formData.people);
+		}
 
 		// Description
 		new Setting(contentEl)
 			.setName('Description')
 			.addTextArea(text => text
 				.setPlaceholder('Event description')
+				.setValue(this.formData.description)
 				.onChange(v => { this.formData.description = v; }));
 
 		// Submit button
 		new Setting(contentEl)
 			.addButton(btn => btn
-				.setButtonText('Create event')
+				.setButtonText(this.isEdit ? 'Save changes' : 'Create event')
 				.setCta()
 				.onClick(() => this.submit()));
 

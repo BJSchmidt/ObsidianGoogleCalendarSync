@@ -6,7 +6,7 @@ import { TemplateEngine } from './templateEngine';
 import { SyncEngine } from './syncEngine';
 import { TwoWaySyncHandler } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
-import { CreateEventModal } from './createEventModal';
+import { CalendarEventModal } from './createEventModal';
 import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 
 export default class GoogleCalendarSync extends Plugin {
@@ -102,6 +102,19 @@ export default class GoogleCalendarSync extends Plugin {
 			id: 'new-calendar-event',
 			name: 'New Calendar Event',
 			callback: () => this.openCreateEventModal(),
+		});
+
+		this.addCommand({
+			id: 'edit-calendar-event',
+			name: 'Edit Calendar Event',
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== 'md') return false;
+				const cache = this.app.metadataCache.getFileCache(file);
+				if (cache?.frontmatter?.['cal-type'] !== 'calendar-event') return false;
+				if (!checking) this.openEditEventModal(file);
+				return true;
+			},
 		});
 
 		this.addCommand({
@@ -227,12 +240,91 @@ export default class GoogleCalendarSync extends Plugin {
 			}];
 		}
 
-		new CreateEventModal(
+		new CalendarEventModal(
 			this.app,
 			calendars,
 			settings.defaultCalendarId,
 			(formData) => this.createNewEventNote(formData)
 		).open();
+	}
+
+	private async openEditEventModal(file: TFile): Promise<void> {
+		const settings = this.settings;
+		const content = await this.app.vault.read(file);
+		const fm = this.noteManager.parseFrontmatter(content);
+
+		if (fm['cal-type'] !== 'calendar-event') {
+			new Notice('This note is not a calendar event.');
+			return;
+		}
+
+		let calendars = (settings.cachedCalendars || [])
+			.filter(c => settings.enabledCalendars.includes(c.id));
+
+		if (calendars.length === 0) {
+			calendars = [{
+				id: settings.defaultCalendarId || 'primary',
+				name: 'Primary',
+				color: '#4285F4',
+				isPrimary: true,
+				accessRole: 'owner',
+			}];
+		}
+
+		// Build initial form data from existing frontmatter
+		const initialData: NewEventFormData = {
+			title: String(fm['title'] ?? ''),
+			date: String(fm['date'] ?? ''),
+			startTime: String(fm['startTime'] ?? ''),
+			endTime: String(fm['endTime'] ?? ''),
+			allDay: Boolean(fm['allDay'] ?? false),
+			calendarId: String(fm['cal-calendar-id'] ?? settings.defaultCalendarId ?? 'primary'),
+			calendarName: String(fm['cal-calendar'] ?? 'Primary'),
+			location: String(fm['cal-location'] ?? ''),
+			description: String(fm['cal-description'] ?? ''),
+			tags: Array.isArray(fm['tags']) ? fm['tags'].map(String) : [],
+			people: Array.isArray(fm['people']) ? fm['people'].map(String) : [],
+		};
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			settings.defaultCalendarId,
+			(formData) => this.updateEventFromModal(file, formData),
+			initialData,
+		).open();
+	}
+
+	private async updateEventFromModal(file: TFile, formData: NewEventFormData): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const existingFm = this.noteManager.parseFrontmatter(content);
+		const body = this.noteManager.extractBody(content);
+
+		// Merge: preserve all existing keys, overwrite editable fields
+		const merged: Record<string, unknown> = {
+			...existingFm,
+			'title': formData.title,
+			'date': formData.date,
+			'startTime': formData.allDay ? null : (formData.startTime || null),
+			'endTime': formData.allDay ? null : (formData.endTime || null),
+			'allDay': formData.allDay,
+			'cal-calendar': formData.calendarName,
+			'cal-calendar-id': formData.calendarId,
+			'cal-location': formData.location || null,
+			'cal-description': formData.description || null,
+			'tags': formData.tags.length > 0 ? formData.tags : null,
+			'people': formData.people.length > 0 ? formData.people : null,
+		};
+
+		const newContent = this.noteManager.buildNoteContent(merged, body);
+
+		try {
+			await this.app.vault.modify(file, newContent);
+			new Notice('Event updated.');
+		} catch (err) {
+			console.error('Error updating event note:', err);
+			new Notice('Failed to update event note.');
+		}
 	}
 
 	private async createNewEventNote(formData: NewEventFormData): Promise<void> {

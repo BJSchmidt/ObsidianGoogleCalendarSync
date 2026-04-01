@@ -44,6 +44,11 @@ export class MultiValueInput {
 		this.renderChips();
 	}
 
+	setValues(values: string[]): void {
+		this.values = [...values];
+		this.renderChips();
+	}
+
 	getValues(): string[] {
 		return [...this.values];
 	}
