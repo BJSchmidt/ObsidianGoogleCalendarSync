@@ -94,6 +94,20 @@ export interface GoogleCalendarListEntry {
 	accessRole: string;
 }
 
+export interface NewEventFormData {
+	title: string;
+	date: string;        // YYYY-MM-DD
+	startTime: string;   // HH:MM or empty
+	endTime: string;     // HH:MM or empty
+	allDay: boolean;
+	calendarId: string;
+	calendarName: string;
+	location: string;
+	description: string;
+	tags: string[];      // e.g. ['meeting', 'project-x']
+	people: string[];    // e.g. ['[[John Doe]]', '[[Jane Smith]]']
+}
+
 export interface SyncResult {
 	created: number;
 	updated: number;

@@ -14,3 +14,67 @@
 	color: var(--text-normal);
 	box-sizing: border-box;
 }
+
+/* Create Event Modal */
+.cal-create-event-modal .setting-item {
+	border-top: none;
+}
+
+.cal-create-event-modal textarea {
+	width: 100%;
+	min-height: 80px;
+	resize: vertical;
+}
+
+/* Multi-value input with chips (tags, people) */
+.cal-multi-input {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	min-height: 32px;
+	padding: 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-modifier-form-field);
+	width: 100%;
+}
+
+.cal-multi-chips {
+	display: contents;
+}
+
+.cal-multi-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 8px;
+	border-radius: 12px;
+	background: var(--tag-background);
+	color: var(--tag-color);
+	font-size: var(--font-smaller);
+	white-space: nowrap;
+}
+
+.cal-multi-chip-remove {
+	cursor: pointer;
+	opacity: 0.6;
+	font-size: 14px;
+	line-height: 1;
+}
+
+.cal-multi-chip-remove:hover {
+	opacity: 1;
+}
+
+.cal-multi-text-input {
+	border: none !important;
+	outline: none !important;
+	box-shadow: none !important;
+	background: transparent !important;
+	flex: 1;
+	min-width: 80px;
+	padding: 2px 4px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
