@@ -354,7 +354,18 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 			const calSetting = new Setting(this.calendarListContainer)
 				.setName(`${cal.name}${cal.isPrimary ? ' (primary)' : ''}`)
 				.setDesc(cal.id)
-				.addToggle(toggle => toggle
+				.addColorPicker(picker => {
+						const customColor = this.plugin.settings.calendarColors?.[cal.id];
+						picker.setValue(customColor || cal.color || '#4285F4');
+						picker.onChange(async (value) => {
+							if (!this.plugin.settings.calendarColors) {
+								this.plugin.settings.calendarColors = {};
+							}
+							this.plugin.settings.calendarColors[cal.id] = value;
+							await this.plugin.saveSettings();
+						});
+					})
+					.addToggle(toggle => toggle
 					.setValue(isEnabled)
 					.onChange(async (value) => {
 						if (value) {

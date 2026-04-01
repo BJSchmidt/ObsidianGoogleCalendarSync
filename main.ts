@@ -7,7 +7,11 @@ import { SyncEngine } from './syncEngine';
 import { TwoWaySyncHandler } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
 import { CalendarEventModal } from './createEventModal';
-import { MonthCalendarView, WeekCalendarView, ThreeDayCalendarView, getViewOptions, loadTuiCss, unloadTuiCss } from './basesCalendarView';
+import {
+	MonthCalendarView, WeekCalendarView,
+	SevenDayCalendarView, FourteenDayCalendarView, TwoWeekCalendarView,
+	getViewOptions, loadTuiCss, unloadTuiCss,
+} from './basesCalendarView';
 import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 
 export default class GoogleCalendarSync extends Plugin {
@@ -144,10 +148,24 @@ export default class GoogleCalendarSync extends Plugin {
 			options: getViewOptions,
 		});
 
-		this.registerBasesView('cal-3day', {
-			name: '3-Day Calendar',
-			icon: 'calendar-days',
-			factory: (controller, containerEl) => new ThreeDayCalendarView(controller, containerEl),
+		this.registerBasesView('cal-7day', {
+			name: '7-Day Lookahead',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new SevenDayCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-14day', {
+			name: '14-Day Lookahead',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new FourteenDayCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-2week', {
+			name: '2-Week Calendar',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new TwoWeekCalendarView(controller, containerEl),
 			options: getViewOptions,
 		});
 

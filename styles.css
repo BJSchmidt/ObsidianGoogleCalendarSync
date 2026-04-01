@@ -152,13 +152,46 @@
 .cal-view-tui-container {
 	flex: 1;
 	min-height: 400px;
-}
-
-/* Override TUI Calendar event colors to use Obsidian accent */
-.cal-view-tui-container .toastui-calendar-weekday-event-dot {
-	background-color: var(--interactive-accent) !important;
+	border-top: 1px solid var(--background-modifier-border);
+	border-right: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .cal-view-tui-container .toastui-calendar-event {
 	cursor: pointer;
 }
+
+/* Hour grid line — gradient-based dashed border for fine control */
+.cal-view-tui-container .toastui-calendar-gridline-half:nth-child(odd) {
+	background-image: linear-gradient(
+		to right,
+		var(--background-modifier-border) 40%,
+		transparent 0%
+	);
+	background-position: top;
+	background-size: 8px 1px;
+	background-repeat: repeat-x;
+}
+
+/* Today cell background in month/2-week views */
+.cal-view-tui-container .toastui-calendar-daygrid-cell:has(.toastui-calendar-weekday-grid-date-decorator) {
+	background-color: color-mix(in srgb, var(--interactive-accent) 10%, transparent) !important;
+}
+
+/* Today circle in month/2-week views — use Obsidian accent instead of TUI's hardcoded blue */
+.cal-view-tui-container .toastui-calendar-weekday-grid-date-decorator {
+	background-color: var(--interactive-accent) !important;
+	color: #ffffff !important;
+}
+
+/* Fix: remove 10px padding offset on month day-names row */
+.cal-view-tui-container .toastui-calendar-day-names.toastui-calendar-month {
+	padding: 0 !important;
+}
+
+/* Fix: account for border (top + bottom) on week day-names row */
+.cal-view-tui-container .toastui-calendar-panel.toastui-calendar-week-view-day-names {
+	height: 45px !important;
+}
+
+
