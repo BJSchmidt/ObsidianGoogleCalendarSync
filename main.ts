@@ -7,6 +7,7 @@ import { SyncEngine } from './syncEngine';
 import { TwoWaySyncHandler } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
 import { CalendarEventModal } from './createEventModal';
+import { MonthCalendarView, WeekCalendarView, ThreeDayCalendarView, getViewOptions } from './basesCalendarView';
 import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 
 export default class GoogleCalendarSync extends Plugin {
@@ -125,6 +126,28 @@ export default class GoogleCalendarSync extends Plugin {
 
 		// Settings tab
 		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
+
+		// Bases calendar views
+		this.registerBasesView('cal-month', {
+			name: 'Month Calendar',
+			icon: 'calendar',
+			factory: (controller, containerEl) => new MonthCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-week', {
+			name: 'Week Calendar',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new WeekCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-3day', {
+			name: '3-Day Calendar',
+			icon: 'calendar-days',
+			factory: (controller, containerEl) => new ThreeDayCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
 
 		// Two-way sync: watch for file modifications
 		this.registerEvent(
