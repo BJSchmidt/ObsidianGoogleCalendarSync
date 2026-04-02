@@ -75,7 +75,7 @@ export class TemplateEngine {
 		return [
 			'---',
 			'cal-type: calendar-event',
-			'cal-calendar: primary',
+			'calendar: primary',
 			'cal-event-id: ',
 			'title: ',
 			'date: ',

@@ -69,7 +69,7 @@ function extractEvents(view: BasesView): CalendarEvent[] {
 	const endTimeProp = config.getAsPropertyId("endTimeProp") ?? "note.endTime";
 	const allDayProp = config.getAsPropertyId("allDayProp") ?? "note.allDay";
 	const calendarProp =
-		config.getAsPropertyId("calendarProp") ?? "note.cal-calendar";
+		config.getAsPropertyId("calendarProp") ?? "note.calendar";
 
 	const events: CalendarEvent[] = [];
 	for (const entry of view.data.data) {
@@ -280,7 +280,7 @@ function getViewOptions(config: BasesViewConfig): BasesAllOptions[] {
 			type: "property" as const,
 			key: "calendarProp",
 			displayName: "Calendar name property",
-			default: "cal-calendar",
+			default: "calendar",
 		},
 		{
 			type: "dropdown" as const,
@@ -649,7 +649,7 @@ abstract class BaseTuiCalendarView extends BasesView {
 			calendarId: String(
 				fm["cal-calendar-id"] ?? defaultCalendarId ?? "primary",
 			),
-			calendarName: String(fm["cal-calendar"] ?? "Primary"),
+			calendarName: String(fm["calendar"] ?? fm["cal-calendar"] ?? "Primary"),
 			location: String(fm["cal-location"] ?? ""),
 			description: String(fm["cal-description"] ?? ""),
 			tags: Array.isArray(fm["tags"]) ? fm["tags"].map(String) : [],

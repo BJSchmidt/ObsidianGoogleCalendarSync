@@ -36,7 +36,7 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	autoSyncInterval: 15,
 	lastSyncTime: '',
 	syncTokens: {},
-	noteTitleFormat: '{title} {date}',
+	noteTitleFormat: '{title}',
 	templatePath: '',
 	newEventTemplatePath: '',
 	defaultCalendarId: 'primary',

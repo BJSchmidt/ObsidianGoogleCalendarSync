@@ -116,7 +116,8 @@ export default class GoogleCalendarSync extends Plugin {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || file.extension !== 'md') return false;
 				const cache = this.app.metadataCache.getFileCache(file);
-				if (cache?.frontmatter?.['cal-type'] !== 'calendar-event') return false;
+				const fm = cache?.frontmatter;
+				if (!fm?.['cal-event-id'] && !fm?.['calendar'] && !fm?.['cal-calendar']) return false;
 				if (!checking) this.openEditEventModal(file);
 				return true;
 			},
@@ -195,7 +196,7 @@ export default class GoogleCalendarSync extends Plugin {
 				if (file instanceof TFile && file.extension === 'md') {
 					const cache = this.app.metadataCache.getCache(file.path);
 					const fm = cache?.frontmatter;
-					if (fm && fm['cal-type'] === 'calendar-event') {
+					if (fm && (fm['cal-type'] === 'calendar-event' || fm['cal-event-id'])) {
 						this.twoWaySync.handleFileDelete(file, fm);
 					}
 				}
@@ -297,7 +298,7 @@ export default class GoogleCalendarSync extends Plugin {
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content);
 
-		if (fm['cal-type'] !== 'calendar-event') {
+		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) {
 			new Notice('This note is not a calendar event.');
 			return;
 		}
@@ -324,7 +325,7 @@ export default class GoogleCalendarSync extends Plugin {
 			endDate: String(fm['endDate'] ?? ''),
 			allDay: Boolean(fm['allDay'] ?? false),
 			calendarId: String(fm['cal-calendar-id'] ?? settings.defaultCalendarId ?? 'primary'),
-			calendarName: String(fm['cal-calendar'] ?? 'Primary'),
+			calendarName: String(fm['calendar'] ?? fm['cal-calendar'] ?? 'Primary'),
 			location: String(fm['cal-location'] ?? ''),
 			description: String(fm['cal-description'] ?? ''),
 			tags: Array.isArray(fm['tags']) ? fm['tags'].map(String) : [],
@@ -354,13 +355,15 @@ export default class GoogleCalendarSync extends Plugin {
 			'endTime': formData.allDay ? null : (formData.endTime || null),
 			'endDate': formData.allDay ? null : (formData.endDate || null),
 			'allDay': formData.allDay,
-			'cal-calendar': formData.calendarName,
+			'calendar': formData.calendarName,
 			'cal-calendar-id': formData.calendarId,
 			'cal-location': formData.location || null,
 			'cal-description': formData.description || null,
 			'tags': formData.tags.length > 0 ? formData.tags : null,
 			'people': formData.people.length > 0 ? formData.people : null,
 		};
+		// Migrate legacy cal-calendar → calendar
+		delete merged['cal-calendar'];
 
 		const newContent = this.noteManager.buildNoteContent(merged, body);
 
@@ -379,25 +382,24 @@ export default class GoogleCalendarSync extends Plugin {
 		const folderPath = normalizePath(`${settings.syncFolder}/${calendarFolder}`);
 		await this.noteManager.ensureFolderExists(folderPath);
 
-		// Build filename from the title format setting
-		const format = settings.noteTitleFormat || '{title} {date}';
-		const baseName = this.noteManager.sanitizeFilename(
-			format
-				.replace(/\{title\}/g, formData.title)
-				.replace(/\{date\}/g, formData.date)
-		);
+		// Build filename from title only; date appended on collision
+		const baseName = this.noteManager.sanitizeFilename(formData.title);
 		let filePath = normalizePath(`${folderPath}/${baseName}.md`);
 
-		// Handle filename collision
+		// Handle filename collision: append date, then timestamp
 		if (this.app.vault.getAbstractFileByPath(filePath)) {
-			const suffix = Date.now().toString(36);
-			filePath = normalizePath(`${folderPath}/${baseName}_${suffix}.md`);
+			const nameWithDate = this.noteManager.sanitizeFilename(`${formData.title} ${formData.date}`);
+			filePath = normalizePath(`${folderPath}/${nameWithDate}.md`);
+			if (this.app.vault.getAbstractFileByPath(filePath)) {
+				const suffix = Date.now().toString(36);
+				filePath = normalizePath(`${folderPath}/${nameWithDate}_${suffix}.md`);
+			}
 		}
 
 		// Build frontmatter from form data
 		const frontmatter: Record<string, unknown> = {
 			'cal-type': 'calendar-event',
-			'cal-calendar': formData.calendarName,
+			'calendar': formData.calendarName,
 			'cal-calendar-id': formData.calendarId,
 			'cal-event-id': '',
 			'title': formData.title,

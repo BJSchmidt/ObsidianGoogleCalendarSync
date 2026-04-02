@@ -112,7 +112,7 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 
 // Minimum required fields to create a new Google Calendar event from a note.
 // Only 'date' is strictly required — title falls back to the filename, and
-// cal-calendar falls back to the configured defaultCalendarId.
+// calendar falls back to the configured defaultCalendarId.
 const REQUIRED_NEW_EVENT_FIELDS = ['date'];
 
 export class TwoWaySyncHandler {
@@ -137,20 +137,11 @@ export class TwoWaySyncHandler {
 	// Scan all existing event notes and populate the snapshot cache
 	async initialize(): Promise<void> {
 		this.snapshots.clear();
-		const settings = this.getSettings();
-		const folder = this.app.vault.getAbstractFileByPath(
-			normalizePath(settings.syncFolder)
-		);
-		if (!folder) return;
 
-		const allFiles = this.app.vault.getMarkdownFiles();
-		const syncFolderPrefix = normalizePath(settings.syncFolder) + '/';
-
-		for (const file of allFiles) {
-			if (!file.path.startsWith(syncFolderPrefix)) continue;
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			const fm = cache?.frontmatter;
-			if (!fm || fm['cal-type'] !== 'calendar-event') continue;
+			if (!fm) continue;
 			const eventId = fm['cal-event-id'];
 			if (!eventId || typeof eventId !== 'string' || !eventId.trim()) continue;
 
@@ -182,20 +173,17 @@ export class TwoWaySyncHandler {
 		this.syncReady = value;
 	}
 
-	// Scan all files in the sync folder for ones that have a date but no cal-event-id.
-	// This catches events created by tools like Full Calendar that don't go through
-	// our create/modify hooks (e.g. they existed before the plugin loaded).
+	// Scan the entire vault for notes that have 'calendar' + 'date' but no cal-event-id.
+	// This catches events created before the plugin loaded or notes that the user
+	// has manually tagged as calendar events.
 	async scanForUnsyncedFiles(): Promise<void> {
-		const syncFolderPrefix = normalizePath(this.getSettings().syncFolder) + '/';
-		const allFiles = this.app.vault.getMarkdownFiles();
-
-		for (const file of allFiles) {
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (this.destroyed) return;
-			if (!file.path.startsWith(syncFolderPrefix)) continue;
 
 			const content = await this.app.vault.read(file);
 			const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
 			if (!fm || !fm['date']) continue;
+			if (!fm['calendar'] && !fm['cal-calendar']) continue;
 
 			const eventId = fm['cal-event-id'] as string | undefined;
 			if (eventId && eventId.trim()) continue; // Already synced
@@ -206,10 +194,9 @@ export class TwoWaySyncHandler {
 
 	// Entry point for vault 'modify' events
 	handleFileModify(file: TFile): void {
-		console.log('[GCal] handleFileModify', file.path, 'syncReady:', this.syncReady, 'isWriting:', this.noteManager.isWriting, 'inFolder:', this.isInSyncFolder(file));
 		if (!this.syncReady) return;
 		if (this.noteManager.isWriting) return;
-		if (!this.isInSyncFolder(file)) return;
+		if (!this.isCalendarRelevant(file)) return;
 
 		this.debounce(file.path, () => this.processModification(file));
 	}
@@ -255,10 +242,9 @@ export class TwoWaySyncHandler {
 
 	// Entry point for vault 'create' events (user-created notes without event-id)
 	handleFileCreate(file: TFile): void {
-		console.log('[GCal] handleFileCreate', file.path, 'syncReady:', this.syncReady, 'isWriting:', this.noteManager.isWriting, 'inFolder:', this.isInSyncFolder(file));
 		if (!this.syncReady) return;
 		if (this.noteManager.isWriting) return;
-		if (!this.isInSyncFolder(file)) return;
+		if (!this.isCalendarRelevant(file)) return;
 		if (file.extension !== 'md') return;
 
 		// Debounce: wait for user to finish filling in the template
@@ -266,7 +252,6 @@ export class TwoWaySyncHandler {
 	}
 
 	private async processModification(file: TFile): Promise<void> {
-		console.log('[GCal] processModification', file.path, 'destroyed:', this.destroyed, 'isSyncing:', this.getSyncEngineIsSyncing());
 		if (this.destroyed) return;
 		if (this.getSyncEngineIsSyncing()) return;
 
@@ -274,11 +259,8 @@ export class TwoWaySyncHandler {
 		// relying on the metadata cache (which updates asynchronously).
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
-		console.log('[GCal] processModification fm:', JSON.stringify(fm));
-		// Accept files that are already marked as calendar events OR any file in the
-		// sync folder that has a date property (e.g. events created by Full Calendar).
-		if (!fm || (fm['cal-type'] !== 'calendar-event' && !fm['date'])) {
-			console.log('[GCal] processModification: skipping - no cal-type and no date');
+		// Accept files that have a cal-event-id (already synced) or a calendar property
+		if (!fm || (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar'])) {
 			return;
 		}
 
@@ -391,9 +373,9 @@ export class TwoWaySyncHandler {
 					this.noteManager.endWrite();
 				}
 			}
-			// Rename the file if title or date changed (mirrors the rename in updateEventNote)
-			if (localChanges.includes('title') || localChanges.includes('date')) {
-				const calendarName = (fm['cal-calendar'] as string) ?? '';
+			// Rename the file if title or date changed — only for managed notes in the sync folder
+			if ((localChanges.includes('title') || localChanges.includes('date')) && this.isInSyncFolder(file)) {
+				const calendarName = (fm['calendar'] as string) ?? (fm['cal-calendar'] as string) ?? '';
 				const desiredPath = this.noteManager.getNotePathForEvent({
 					title: merged.title,
 					date: merged.date,
@@ -426,9 +408,8 @@ export class TwoWaySyncHandler {
 
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
-		// Accept files that are already marked as calendar events OR any file in the
-		// sync folder that has a date property (e.g. events created by Full Calendar).
-		if (!fm || (fm['cal-type'] !== 'calendar-event' && !fm['date'])) return;
+		const calendarField = fm?.['calendar'] ?? fm?.['cal-calendar'];
+		if (!fm || (!calendarField && fm['cal-type'] !== 'calendar-event')) return;
 
 		const eventId: string | undefined = fm['cal-event-id'] as string | undefined;
 		if (eventId && eventId.trim()) return; // Already has event-id; not a new event
@@ -437,7 +418,6 @@ export class TwoWaySyncHandler {
 	}
 
 	private async handleNewEvent(file: TFile, fm: Record<string, unknown>): Promise<void> {
-		console.log('[GCal] handleNewEvent', file.path);
 		if (this.destroyed) return;
 
 		// Validate required fields
@@ -446,15 +426,14 @@ export class TwoWaySyncHandler {
 			return !val || (typeof val === 'string' && !val.trim());
 		});
 		if (missing.length > 0) {
-			console.log('[GCal] handleNewEvent: missing fields', missing);
 			return; // Not ready yet; will retry on next save
 		}
 
 		const title = String(fm['title'] ?? '') || file.basename;
 		const date = fmDate(fm['date']);
-		const calendarFieldValue = String(fm['cal-calendar'] ?? '');
+		const calendarFieldValue = String(fm['calendar'] ?? fm['cal-calendar'] ?? '');
 
-		// Resolve calendar ID: match 'cal-calendar' field against known names or IDs,
+		// Resolve calendar ID: match 'calendar' field against known names or IDs,
 		// then fall back to the parent folder name, then to defaultCalendarId.
 		let calendarId = this.getSettings().defaultCalendarId;
 		if (calendarFieldValue && calendarFieldValue !== calendarId) {
@@ -477,9 +456,8 @@ export class TwoWaySyncHandler {
 			if (folderMatch) calendarId = folderMatch.id;
 		}
 
-		console.log('[GCal] handleNewEvent: resolved calendarId:', calendarId, 'folderName:', file.parent?.name);
 		if (!calendarId) {
-			this.notify(`Cannot sync "${title}": no calendar found. Set cal-calendar in the note or configure a default calendar.`);
+			this.notify(`Cannot sync "${title}": no calendar found. Set "calendar" in the note or configure a default calendar.`);
 			return;
 		}
 		if (this.destroyed) return;
@@ -601,6 +579,14 @@ export class TwoWaySyncHandler {
 		}
 
 		return patch;
+	}
+
+	private isCalendarRelevant(file: TFile): boolean {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const fm = cache?.frontmatter;
+		if (fm && (fm['cal-event-id'] || fm['calendar'] || fm['cal-calendar'])) return true;
+		// Fallback: sync folder files (metadata may not be ready yet for new files)
+		return this.isInSyncFolder(file);
 	}
 
 	private isInSyncFolder(file: TFile): boolean {
