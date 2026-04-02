@@ -99,6 +99,7 @@ export interface NewEventFormData {
 	date: string;        // YYYY-MM-DD
 	startTime: string;   // HH:MM or empty
 	endTime: string;     // HH:MM or empty
+	endDate: string;     // YYYY-MM-DD or empty (for multi-day timed events)
 	allDay: boolean;
 	calendarId: string;
 	calendarName: string;

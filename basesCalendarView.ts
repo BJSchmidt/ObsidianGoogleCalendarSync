@@ -7,9 +7,12 @@ import {
 	Value,
 	NullValue,
 	TFile,
+	Notice,
 } from "obsidian";
 import Calendar from "@toast-ui/calendar";
 import type { EventObject, Options } from "@toast-ui/calendar";
+import { CalendarEventModal } from "./createEventModal";
+import type { NewEventFormData, GoogleCalendarListEntry } from "./types";
 
 /** TZDate from TUI Calendar — has getHours/getMinutes like Date */
 interface TZDateLike {
@@ -181,7 +184,6 @@ function buildCalendarInfos(
 	);
 	let paletteIdx = 0;
 
-	console.log(`[cal-view] cachedByName keys:`, Array.from(cachedByName.keys()), `event names:`, Array.from(names));
 	return Array.from(names).map((name) => {
 		const cached = cachedByName.get(name);
 		// Priority: user-chosen color > Google color > fallback palette
@@ -189,7 +191,6 @@ function buildCalendarInfos(
 			(cached && calendarColors[cached.id]) ||
 			cached?.color ||
 			DEFAULT_PALETTE[paletteIdx++ % DEFAULT_PALETTE.length];
-		console.log(`[cal-view] buildCalendarInfos: name="${name}" cachedId=${cached?.id} customColor=${cached ? calendarColors[cached.id] : 'N/A'} googleColor=${cached?.color} resolved=${color}`);
 		return {
 			id: name,
 			name,
@@ -504,9 +505,10 @@ abstract class BaseTuiCalendarView extends BasesView {
 		const cal = new Calendar(this.calendarEl, {
 			defaultView: this.getDefaultView(),
 			usageStatistics: false,
-			isReadOnly: true,
+			isReadOnly: false,
 			useFormPopup: false,
 			useDetailPopup: false,
+			gridSelection: true,
 			timezone: {
 				zones: [
 					{
@@ -528,15 +530,191 @@ abstract class BaseTuiCalendarView extends BasesView {
 			},
 		});
 
-		// Handle event clicks — open the source note
+		// Apply drag/resize changes to the TUI calendar view and persist to note
+		cal.on("beforeUpdateEvent", ({ event, changes }) => {
+			cal.updateEvent(event.id, event.calendarId, changes);
+			this.persistEventUpdate(event.id, changes);
+		});
+
+		// Click event — open edit modal
 		cal.on("clickEvent", ({ event }) => {
 			const file = this.fileMap.get(event.id);
 			if (file) {
-				this.app.workspace.openLinkText(file.path, "", false);
+				this.openEditModal(file);
 			}
 		});
 
+		// Select time range — open create modal with pre-filled times
+		cal.on("selectDateTime", ({ start, end, isAllday }) => {
+			this.openCreateModal(start, end, isAllday);
+			cal.clearGridSelections();
+		});
+
 		return cal;
+	}
+
+	/** Persist a drag/resize change to the note's frontmatter.
+	 *  The two-way sync handler will detect the vault modify and push to Google. */
+	private async persistEventUpdate(
+		eventId: string,
+		changes: EventObject,
+	): Promise<void> {
+		const file = this.fileMap.get(eventId);
+		if (!file) return;
+
+		try {
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				if (changes.start) {
+					const start = new Date(changes.start as any);
+					fm["date"] = start.toISOString().slice(0, 10);
+					if (!changes.isAllday && !fm["allDay"]) {
+						fm["startTime"] = `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`;
+					}
+				}
+				if (changes.end) {
+					const end = new Date(changes.end as any);
+					fm["endDate"] = end.toISOString().slice(0, 10);
+					if (!changes.isAllday && !fm["allDay"]) {
+						fm["endTime"] = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+					}
+				}
+				if (changes.isAllday !== undefined) {
+					fm["allDay"] = changes.isAllday;
+					if (changes.isAllday) {
+						delete fm["startTime"];
+						delete fm["endTime"];
+					}
+				}
+				if (changes.title !== undefined) {
+					fm["title"] = changes.title;
+				}
+			});
+		} catch (err) {
+			console.error("[cal-view] Failed to persist event update:", err);
+		}
+	}
+
+	/** Get enabled calendars and default calendar ID from plugin settings. */
+	private getPluginCalendarInfo(): {
+		calendars: GoogleCalendarListEntry[];
+		defaultCalendarId: string;
+		plugin: any;
+	} {
+		const plugin = (this.app as any).plugins?.plugins?.[
+			"google-calendar-sync"
+		];
+		if (!plugin) {
+			return { calendars: [], defaultCalendarId: "primary", plugin: null };
+		}
+		const settings = plugin.settings;
+		let calendars: GoogleCalendarListEntry[] = (
+			settings.cachedCalendars || []
+		).filter((c: GoogleCalendarListEntry) =>
+			settings.enabledCalendars.includes(c.id),
+		);
+		if (calendars.length === 0) {
+			calendars = [
+				{
+					id: settings.defaultCalendarId || "primary",
+					name: "Primary",
+					color: "#4285F4",
+					isPrimary: true,
+					accessRole: "owner",
+				},
+			];
+		}
+		return {
+			calendars,
+			defaultCalendarId: settings.defaultCalendarId,
+			plugin,
+		};
+	}
+
+	/** Open the edit modal for an existing event note. */
+	private async openEditModal(file: TFile): Promise<void> {
+		const { calendars, defaultCalendarId, plugin } =
+			this.getPluginCalendarInfo();
+		if (!plugin) return;
+
+		const content = await this.app.vault.read(file);
+		const fm = plugin.noteManager?.parseFrontmatter(content) ?? {};
+
+		const initialData: NewEventFormData = {
+			title: String(fm["title"] ?? ""),
+			date: String(fm["date"] ?? ""),
+			startTime: String(fm["startTime"] ?? ""),
+			endTime: String(fm["endTime"] ?? ""),
+			endDate: String(fm["endDate"] ?? ""),
+			allDay: Boolean(fm["allDay"] ?? false),
+			calendarId: String(
+				fm["cal-calendar-id"] ?? defaultCalendarId ?? "primary",
+			),
+			calendarName: String(fm["cal-calendar"] ?? "Primary"),
+			location: String(fm["cal-location"] ?? ""),
+			description: String(fm["cal-description"] ?? ""),
+			tags: Array.isArray(fm["tags"]) ? fm["tags"].map(String) : [],
+			people: Array.isArray(fm["people"])
+				? fm["people"].map(String)
+				: [],
+		};
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			defaultCalendarId,
+			async (formData) => {
+				await plugin.updateEventFromModal(file, formData);
+			},
+			initialData,
+		).open();
+	}
+
+	/** Open the create modal with pre-filled date/time from grid selection. */
+	private openCreateModal(
+		start: Date,
+		end: Date,
+		isAllday: boolean,
+	): void {
+		const { calendars, defaultCalendarId, plugin } =
+			this.getPluginCalendarInfo();
+		if (!plugin) return;
+
+		const pad = (n: number) => String(n).padStart(2, "0");
+		const dateStr = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
+
+		const endDateStr = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
+		const initialData: NewEventFormData = {
+			title: "",
+			date: dateStr,
+			startTime: isAllday
+				? ""
+				: `${pad(start.getHours())}:${pad(start.getMinutes())}`,
+			endTime: isAllday
+				? ""
+				: `${pad(end.getHours())}:${pad(end.getMinutes())}`,
+			endDate: dateStr !== endDateStr ? endDateStr : "",
+			allDay: isAllday,
+			calendarId: defaultCalendarId || "primary",
+			calendarName:
+				calendars.find(
+					(c: GoogleCalendarListEntry) =>
+						c.id === defaultCalendarId,
+				)?.name ?? "Primary",
+			location: "",
+			description: "",
+			tags: [],
+			people: [],
+		};
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			defaultCalendarId,
+			async (formData) => {
+				await plugin.createNewEventNote(formData);
+			},
+			initialData,
+		).open();
 	}
 
 	onunload(): void {

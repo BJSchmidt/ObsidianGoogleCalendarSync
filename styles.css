@@ -15,7 +15,7 @@
 	box-sizing: border-box;
 }
 
-/* Create Event Modal */
+/* Create/Edit Event Modal */
 .cal-create-event-modal .setting-item {
 	border-top: none;
 }
@@ -24,6 +24,31 @@
 	width: 100%;
 	min-height: 80px;
 	resize: vertical;
+}
+
+/* Wide controls: Title, Location, Tags, People, Description */
+.cal-create-event-modal .cal-modal-wide-control {
+	flex-grow: 1;
+}
+
+.cal-create-event-modal .cal-modal-wide-control input[type="text"],
+.cal-create-event-modal .cal-modal-wide-control textarea {
+	width: 100%;
+}
+
+.cal-create-event-modal .cal-modal-wide-control .cal-multi-input {
+	width: 100%;
+}
+
+/* Native date picker inputs */
+.cal-create-event-modal .cal-modal-date-input {
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--input-radius);
+	color: var(--text-normal);
+	padding: 4px 8px;
+	font-size: var(--font-ui-small);
+	font-family: inherit;
 }
 
 /* Multi-value input with chips (tags, people) */

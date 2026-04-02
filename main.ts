@@ -17,7 +17,7 @@ import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from '
 export default class GoogleCalendarSync extends Plugin {
 	settings: GoogleCalendarSyncSettings;
 	api: GoogleCalendarAPI;
-	private noteManager: NoteManager;
+	noteManager: NoteManager;
 	private templateEngine: TemplateEngine;
 	syncEngine: SyncEngine;
 	private twoWaySync: TwoWaySyncHandler;
@@ -321,6 +321,7 @@ export default class GoogleCalendarSync extends Plugin {
 			date: String(fm['date'] ?? ''),
 			startTime: String(fm['startTime'] ?? ''),
 			endTime: String(fm['endTime'] ?? ''),
+			endDate: String(fm['endDate'] ?? ''),
 			allDay: Boolean(fm['allDay'] ?? false),
 			calendarId: String(fm['cal-calendar-id'] ?? settings.defaultCalendarId ?? 'primary'),
 			calendarName: String(fm['cal-calendar'] ?? 'Primary'),
@@ -339,7 +340,7 @@ export default class GoogleCalendarSync extends Plugin {
 		).open();
 	}
 
-	private async updateEventFromModal(file: TFile, formData: NewEventFormData): Promise<void> {
+	async updateEventFromModal(file: TFile, formData: NewEventFormData): Promise<void> {
 		const content = await this.app.vault.read(file);
 		const existingFm = this.noteManager.parseFrontmatter(content);
 		const body = this.noteManager.extractBody(content);
@@ -351,6 +352,7 @@ export default class GoogleCalendarSync extends Plugin {
 			'date': formData.date,
 			'startTime': formData.allDay ? null : (formData.startTime || null),
 			'endTime': formData.allDay ? null : (formData.endTime || null),
+			'endDate': formData.allDay ? null : (formData.endDate || null),
 			'allDay': formData.allDay,
 			'cal-calendar': formData.calendarName,
 			'cal-calendar-id': formData.calendarId,
@@ -371,7 +373,7 @@ export default class GoogleCalendarSync extends Plugin {
 		}
 	}
 
-	private async createNewEventNote(formData: NewEventFormData): Promise<void> {
+	async createNewEventNote(formData: NewEventFormData): Promise<void> {
 		const settings = this.settings;
 		const calendarFolder = this.noteManager.sanitizeFilename(formData.calendarName);
 		const folderPath = normalizePath(`${settings.syncFolder}/${calendarFolder}`);
@@ -402,7 +404,7 @@ export default class GoogleCalendarSync extends Plugin {
 			'date': formData.date,
 			'startTime': formData.allDay ? null : (formData.startTime || null),
 			'endTime': formData.allDay ? null : (formData.endTime || null),
-			'endDate': null,
+			'endDate': formData.allDay ? null : (formData.endDate || null),
 			'allDay': formData.allDay,
 			'cal-location': formData.location || null,
 			'cal-description': formData.description || null,
