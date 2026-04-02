@@ -720,6 +720,9 @@ abstract class BaseTuiCalendarView extends BasesView {
 	onunload(): void {
 		this.calendar?.destroy();
 		this.calendar = null;
+		// Remove the class we added in onload so it doesn't bleed into
+		// subsequent views that share the same containerEl
+		this.containerEl.removeClass("cal-view-container");
 	}
 
 	onDataUpdated(): void {
