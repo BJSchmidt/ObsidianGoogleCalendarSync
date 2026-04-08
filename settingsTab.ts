@@ -230,18 +230,7 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 		// ── Note Settings ────────────────────────────────────────────────────
 		new Setting(containerEl).setName('Note Settings').setHeading();
 
-		new Setting(containerEl)
-			.setName('Note title format')
-			.setDesc('Format for event note filenames. Available tokens: {title}, {date}. When an event is rescheduled, the note is automatically renamed and internal links are updated.')
-			.addText(text => text
-				.setPlaceholder('{title} {date}')
-				.setValue(this.plugin.settings.noteTitleFormat)
-				.onChange((value) => {
-					this.plugin.settings.noteTitleFormat = value || '{title} {date}';
-					this.debouncedSave();
-				}));
-
-		new Setting(containerEl)
+new Setting(containerEl)
 			.setName('Note body template')
 			.setDesc('Path to a vault note used as the body template for synced event notes. Leave empty to use the default (# {{title}}). Supports {{title}}, {{date}}, {{startTime}}, {{location}}, etc.')
 			.addText(text => text

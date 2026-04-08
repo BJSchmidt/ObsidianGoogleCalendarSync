@@ -10,7 +10,6 @@ export interface GoogleCalendarSyncSettings {
 	autoSyncInterval: number;
 	lastSyncTime: string;
 	syncTokens: Record<string, string>;
-	noteTitleFormat: string;
 	templatePath: string;
 	newEventTemplatePath: string;
 	defaultCalendarId: string;
@@ -36,7 +35,6 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	autoSyncInterval: 15,
 	lastSyncTime: '',
 	syncTokens: {},
-	noteTitleFormat: '{title}',
 	templatePath: '',
 	newEventTemplatePath: '',
 	defaultCalendarId: 'primary',
