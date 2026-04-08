@@ -230,18 +230,7 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 		// ── Note Settings ────────────────────────────────────────────────────
 		new Setting(containerEl).setName('Note Settings').setHeading();
 
-		new Setting(containerEl)
-			.setName('Note title format')
-			.setDesc('Format for event note filenames. Available tokens: {title}, {date}. When an event is rescheduled, the note is automatically renamed and internal links are updated.')
-			.addText(text => text
-				.setPlaceholder('{title} {date}')
-				.setValue(this.plugin.settings.noteTitleFormat)
-				.onChange((value) => {
-					this.plugin.settings.noteTitleFormat = value || '{title} {date}';
-					this.debouncedSave();
-				}));
-
-		new Setting(containerEl)
+new Setting(containerEl)
 			.setName('Note body template')
 			.setDesc('Path to a vault note used as the body template for synced event notes. Leave empty to use the default (# {{title}}). Supports {{title}}, {{date}}, {{startTime}}, {{location}}, etc.')
 			.addText(text => text
@@ -354,7 +343,18 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 			const calSetting = new Setting(this.calendarListContainer)
 				.setName(`${cal.name}${cal.isPrimary ? ' (primary)' : ''}`)
 				.setDesc(cal.id)
-				.addToggle(toggle => toggle
+				.addColorPicker(picker => {
+						const customColor = this.plugin.settings.calendarColors?.[cal.id];
+						picker.setValue(customColor || cal.color || '#4285F4');
+						picker.onChange(async (value) => {
+							if (!this.plugin.settings.calendarColors) {
+								this.plugin.settings.calendarColors = {};
+							}
+							this.plugin.settings.calendarColors[cal.id] = value;
+							await this.plugin.saveSettings();
+						});
+					})
+					.addToggle(toggle => toggle
 					.setValue(isEnabled)
 					.onChange(async (value) => {
 						if (value) {

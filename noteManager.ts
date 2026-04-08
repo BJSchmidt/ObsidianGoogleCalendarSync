@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile, TFolder } from 'obsidian';
+import { App, normalizePath, TFile } from 'obsidian';
 import { parse, stringify } from 'yaml';
 import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } from './types';
 
@@ -13,7 +13,7 @@ import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } fr
 // and use flat names instead, with a list of the affected properties shown in the
 // settings panel so they know exactly what will change.
 const SYNC_OWNED_KEYS = new Set([
-	'cal-type', 'cal-calendar', 'cal-calendar-id', 'cal-event-id',
+	'cal-type', 'calendar', 'cal-calendar', 'cal-calendar-id', 'cal-event-id',
 	'title', 'date', 'startTime', 'endTime', 'endDate',
 	'allDay', 'cal-location', 'cal-description',
 	'cal-attendees', 'cal-organizer', 'cal-status',
@@ -40,12 +40,7 @@ export class NoteManager {
 
 	async buildIndex(): Promise<void> {
 		this.eventIndex.clear();
-		const folder = this.app.vault.getAbstractFileByPath(
-			normalizePath(this.settings.syncFolder)
-		);
-		if (!folder || !(folder instanceof TFolder)) return;
-
-		for (const file of this.getAllMarkdownFiles(folder)) {
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			// Fall back to legacy "event-id" so existing notes are found during migration
 			const eventId = cache?.frontmatter?.['cal-event-id'] ?? cache?.frontmatter?.['gcal-event-id'];
@@ -53,18 +48,6 @@ export class NoteManager {
 				this.eventIndex.set(eventId, file.path);
 			}
 		}
-	}
-
-	private getAllMarkdownFiles(folder: TFolder): TFile[] {
-		const files: TFile[] = [];
-		for (const child of folder.children) {
-			if (child instanceof TFile && child.extension === 'md') {
-				files.push(child);
-			} else if (child instanceof TFolder) {
-				files.push(...this.getAllMarkdownFiles(child));
-			}
-		}
-		return files;
 	}
 
 	findNoteByEventId(eventId: string): TFile | null {
@@ -75,29 +58,30 @@ export class NoteManager {
 	}
 
 	getNotePathForEvent(event: CalendarEventNote): string {
-		const format = this.settings.noteTitleFormat || '{title} {date}';
-		const baseName = this.sanitizeFilename(
-			format
-				.replace(/\{title\}/g, event.title)
-				.replace(/\{date\}/g, event.date)
-		);
+		const baseName = this.sanitizeFilename(event.title);
 		const calendarFolder = this.sanitizeFilename(event.calendarName);
 		const baseFolder = normalizePath(`${this.settings.syncFolder}/${calendarFolder}`);
-		const basePath = normalizePath(`${baseFolder}/${baseName}.md`);
+		let path = normalizePath(`${baseFolder}/${baseName}.md`);
 
-		// Check for filename collision with a different event
-		const existing = this.app.vault.getAbstractFileByPath(basePath);
-		if (existing instanceof TFile) {
-			const cache = this.app.metadataCache.getFileCache(existing);
-			// Fall back to legacy "event-id" for collision detection during migration
-		const existingId = cache?.frontmatter?.['cal-event-id'] ?? cache?.frontmatter?.['gcal-event-id'];
-			if (existingId && existingId !== event.eventId) {
+		// Use the eventIndex (synchronously updated) instead of the metadata cache
+		// (async) to determine whether the file at `path` belongs to this event.
+		const ownPath = this.eventIndex.get(event.eventId);
+
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile && existing.path !== ownPath) {
+			// Collision with a different event's note — append date
+			const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+			path = normalizePath(`${baseFolder}/${nameWithDate}.md`);
+
+			const existing2 = this.app.vault.getAbstractFileByPath(path);
+			if (existing2 instanceof TFile && existing2.path !== ownPath) {
+				// Double collision (same title + same date) — append eventId suffix
 				const suffix = event.eventId.slice(-6);
-				return normalizePath(`${baseFolder}/${baseName}_${suffix}.md`);
+				path = normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`);
 			}
 		}
 
-		return basePath;
+		return path;
 	}
 
 	async ensureFolderExists(folderPath: string): Promise<void> {
@@ -151,7 +135,7 @@ export class NoteManager {
 			// Custom properties first; standard fields below always take precedence
 			...custom,
 			'cal-type': 'calendar-event',
-			'cal-calendar': event.calendarName,
+			'calendar': event.calendarName,
 			'cal-calendar-id': event.calendarId,
 			'cal-event-id': event.eventId,
 			'title': event.title,
@@ -228,6 +212,13 @@ export class NoteManager {
 				merged[key] = googleFm[key];
 			}
 		}
+		// Migrate legacy cal-calendar → calendar
+		if ('cal-calendar' in merged) {
+			if (!('calendar' in merged)) {
+				merged['calendar'] = merged['cal-calendar'];
+			}
+			delete merged['cal-calendar'];
+		}
 
 		const content = this.buildNoteContent(merged, body);
 
@@ -239,25 +230,46 @@ export class NoteManager {
 			this.writeDepth--;
 		}
 
-		// Rename the file if the desired path has changed (e.g. event was rescheduled
-		// or retitled).  fileManager.renameFile() triggers Obsidian's built-in link
-		// updater so any [[wiki links]] to this note are rewritten automatically.
+		return this.renameIfNeeded(file, event);
+	}
+
+	/** Rename a managed note (inside sync folder) if its filename doesn't match
+	 *  the current title.  User notes outside the sync folder are never renamed. */
+	async renameIfNeeded(file: TFile, event: CalendarEventNote): Promise<TFile> {
+		const syncPrefix = normalizePath(this.settings.syncFolder) + '/';
+		if (!file.path.startsWith(syncPrefix)) return file;
+
 		const desiredPath = this.getNotePathForEvent(event);
-		if (desiredPath !== file.path) {
-			const desiredFolder = desiredPath.substring(0, desiredPath.lastIndexOf('/'));
-			await this.ensureFolderExists(desiredFolder);
+		if (desiredPath === file.path) return file;
+
+		const baseFolder = desiredPath.substring(0, desiredPath.lastIndexOf('/'));
+		await this.ensureFolderExists(baseFolder);
+
+		// Try the desired path; if it fails (e.g. case-insensitive filesystem
+		// collision on macOS/Windows), fall back to date-appended, then eventId suffix.
+		const fallbacks = [desiredPath];
+		const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+		const datePath = normalizePath(`${baseFolder}/${nameWithDate}.md`);
+		if (datePath !== file.path) fallbacks.push(datePath);
+		const suffix = event.eventId.slice(-6);
+		const suffixPath = normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`);
+		if (suffixPath !== file.path) fallbacks.push(suffixPath);
+
+		for (const target of fallbacks) {
 			this.writeDepth++;
 			try {
-				await this.app.fileManager.renameFile(file, desiredPath);
-				this.eventIndex.set(event.eventId, desiredPath);
+				await this.app.fileManager.renameFile(file, target);
+				this.eventIndex.set(event.eventId, target);
+				const renamed = this.app.vault.getAbstractFileByPath(target);
+				return renamed instanceof TFile ? renamed : file;
+			} catch {
+				// This target collided — try the next fallback
 			} finally {
 				this.writeDepth--;
 			}
-			const renamed = this.app.vault.getAbstractFileByPath(desiredPath);
-			return renamed instanceof TFile ? renamed : file;
 		}
 
-		return file;
+		return file; // All fallbacks exhausted, keep current name
 	}
 
 	async markEventCancelled(file: TFile): Promise<void> {

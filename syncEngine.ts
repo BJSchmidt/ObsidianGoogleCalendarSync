@@ -180,6 +180,8 @@ export class SyncEngine {
 		if (!forceUpdate && storedUpdated && storedUpdated === event.updated && hasCalendarId) {
 			// Even when skipped, ensure the snapshot is registered (covers first-run gap)
 			this.onNoteUpserted?.(event.eventId, this.noteManager.buildSnapshot(event));
+			// Still rename if the filename is stale (e.g. after title format change)
+			await this.noteManager.renameIfNeeded(existingFile, event);
 			return 'skipped';
 		}
 

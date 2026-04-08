@@ -6,12 +6,18 @@ import { TemplateEngine } from './templateEngine';
 import { SyncEngine } from './syncEngine';
 import { TwoWaySyncHandler } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
-import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings } from './types';
+import { CalendarEventModal } from './createEventModal';
+import {
+	MonthCalendarView, WeekCalendarView,
+	SevenDayCalendarView, FourteenDayCalendarView, TwoWeekCalendarView,
+	getViewOptions, loadTuiCss, unloadTuiCss,
+} from './basesCalendarView';
+import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 
 export default class GoogleCalendarSync extends Plugin {
 	settings: GoogleCalendarSyncSettings;
 	api: GoogleCalendarAPI;
-	private noteManager: NoteManager;
+	noteManager: NoteManager;
 	private templateEngine: TemplateEngine;
 	syncEngine: SyncEngine;
 	private twoWaySync: TwoWaySyncHandler;
@@ -100,7 +106,21 @@ export default class GoogleCalendarSync extends Plugin {
 		this.addCommand({
 			id: 'new-calendar-event',
 			name: 'New Calendar Event',
-			callback: () => this.createNewEventNote(),
+			callback: () => this.openCreateEventModal(),
+		});
+
+		this.addCommand({
+			id: 'edit-calendar-event',
+			name: 'Edit Calendar Event',
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== 'md') return false;
+				const cache = this.app.metadataCache.getFileCache(file);
+				const fm = cache?.frontmatter;
+				if (!fm?.['cal-event-id'] && !fm?.['calendar'] && !fm?.['cal-calendar']) return false;
+				if (!checking) this.openEditEventModal(file);
+				return true;
+			},
 		});
 
 		this.addCommand({
@@ -111,6 +131,44 @@ export default class GoogleCalendarSync extends Plugin {
 
 		// Settings tab
 		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
+
+		// Bases calendar views — inject TUI Calendar CSS
+		loadTuiCss();
+
+		this.registerBasesView('cal-month', {
+			name: 'Month Calendar',
+			icon: 'calendar',
+			factory: (controller, containerEl) => new MonthCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-week', {
+			name: 'Week Calendar',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new WeekCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-7day', {
+			name: '7-Day Lookahead',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new SevenDayCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-14day', {
+			name: '14-Day Lookahead',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new FourteenDayCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
+
+		this.registerBasesView('cal-2week', {
+			name: '2-Week Calendar',
+			icon: 'calendar-range',
+			factory: (controller, containerEl) => new TwoWeekCalendarView(controller, containerEl),
+			options: getViewOptions,
+		});
 
 		// Two-way sync: watch for file modifications
 		this.registerEvent(
@@ -138,7 +196,7 @@ export default class GoogleCalendarSync extends Plugin {
 				if (file instanceof TFile && file.extension === 'md') {
 					const cache = this.app.metadataCache.getCache(file.path);
 					const fm = cache?.frontmatter;
-					if (fm && fm['cal-type'] === 'calendar-event') {
+					if (fm && (fm['cal-type'] === 'calendar-event' || fm['cal-event-id'])) {
 						this.twoWaySync.handleFileDelete(file, fm);
 					}
 				}
@@ -164,6 +222,7 @@ export default class GoogleCalendarSync extends Plugin {
 		this.syncEngine?.stopAutoSync();
 		this.twoWaySync?.destroy();
 		this.api?.cleanup();
+		unloadTuiCss();
 	}
 
 	async loadSettings() {
@@ -210,43 +269,170 @@ export default class GoogleCalendarSync extends Plugin {
 		}
 	}
 
-	private async createNewEventNote(): Promise<void> {
+	private openCreateEventModal(): void {
 		const settings = this.settings;
 
-		const calendarFolderName = await this.getDefaultCalendarName();
-		const folderPath = normalizePath(`${settings.syncFolder}/${calendarFolderName}`);
+		let calendars = (settings.cachedCalendars || [])
+			.filter(c => settings.enabledCalendars.includes(c.id));
+
+		if (calendars.length === 0) {
+			calendars = [{
+				id: settings.defaultCalendarId || 'primary',
+				name: 'Primary',
+				color: '#4285F4',
+				isPrimary: true,
+				accessRole: 'owner',
+			}];
+		}
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			settings.defaultCalendarId,
+			(formData) => this.createNewEventNote(formData)
+		).open();
+	}
+
+	private async openEditEventModal(file: TFile): Promise<void> {
+		const settings = this.settings;
+		const content = await this.app.vault.read(file);
+		const fm = this.noteManager.parseFrontmatter(content);
+
+		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) {
+			new Notice('This note is not a calendar event.');
+			return;
+		}
+
+		let calendars = (settings.cachedCalendars || [])
+			.filter(c => settings.enabledCalendars.includes(c.id));
+
+		if (calendars.length === 0) {
+			calendars = [{
+				id: settings.defaultCalendarId || 'primary',
+				name: 'Primary',
+				color: '#4285F4',
+				isPrimary: true,
+				accessRole: 'owner',
+			}];
+		}
+
+		// Build initial form data from existing frontmatter
+		const initialData: NewEventFormData = {
+			title: String(fm['title'] ?? ''),
+			date: String(fm['date'] ?? ''),
+			startTime: String(fm['startTime'] ?? ''),
+			endTime: String(fm['endTime'] ?? ''),
+			endDate: String(fm['endDate'] ?? ''),
+			allDay: Boolean(fm['allDay'] ?? false),
+			calendarId: String(fm['cal-calendar-id'] ?? settings.defaultCalendarId ?? 'primary'),
+			calendarName: String(fm['calendar'] ?? fm['cal-calendar'] ?? 'Primary'),
+			location: String(fm['cal-location'] ?? ''),
+			description: String(fm['cal-description'] ?? ''),
+			tags: Array.isArray(fm['tags']) ? fm['tags'].map(String) : [],
+			people: Array.isArray(fm['people']) ? fm['people'].map(String) : [],
+		};
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			settings.defaultCalendarId,
+			(formData) => this.updateEventFromModal(file, formData),
+			initialData,
+		).open();
+	}
+
+	async updateEventFromModal(file: TFile, formData: NewEventFormData): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const existingFm = this.noteManager.parseFrontmatter(content);
+		const body = this.noteManager.extractBody(content);
+
+		// Merge: preserve all existing keys, overwrite editable fields
+		const merged: Record<string, unknown> = {
+			...existingFm,
+			'title': formData.title,
+			'date': formData.date,
+			'startTime': formData.allDay ? null : (formData.startTime || null),
+			'endTime': formData.allDay ? null : (formData.endTime || null),
+			'endDate': formData.allDay ? null : (formData.endDate || null),
+			'allDay': formData.allDay,
+			'calendar': formData.calendarName,
+			'cal-calendar-id': formData.calendarId,
+			'cal-location': formData.location || null,
+			'cal-description': formData.description || null,
+			'tags': formData.tags.length > 0 ? formData.tags : null,
+			'people': formData.people.length > 0 ? formData.people : null,
+		};
+		// Migrate legacy cal-calendar → calendar
+		delete merged['cal-calendar'];
+
+		const newContent = this.noteManager.buildNoteContent(merged, body);
+
+		try {
+			await this.app.vault.modify(file, newContent);
+			new Notice('Event updated.');
+		} catch (err) {
+			console.error('Error updating event note:', err);
+			new Notice('Failed to update event note.');
+		}
+	}
+
+	async createNewEventNote(formData: NewEventFormData): Promise<void> {
+		const settings = this.settings;
+		const calendarFolder = this.noteManager.sanitizeFilename(formData.calendarName);
+		const folderPath = normalizePath(`${settings.syncFolder}/${calendarFolder}`);
 		await this.noteManager.ensureFolderExists(folderPath);
 
-		// Unique filename using current date + time
-		const now = new Date();
-		const dateStr = now.toISOString().slice(0, 10);
-		const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
-		const filename = `New Calendar Event ${dateStr} ${timeStr}.md`;
-		const filePath = normalizePath(`${folderPath}/${filename}`);
+		// Build filename from title only; date appended on collision
+		const baseName = this.noteManager.sanitizeFilename(formData.title);
+		let filePath = normalizePath(`${folderPath}/${baseName}.md`);
 
+		// Handle filename collision: append date, then timestamp
+		if (this.app.vault.getAbstractFileByPath(filePath)) {
+			const nameWithDate = this.noteManager.sanitizeFilename(`${formData.title} ${formData.date}`);
+			filePath = normalizePath(`${folderPath}/${nameWithDate}.md`);
+			if (this.app.vault.getAbstractFileByPath(filePath)) {
+				const suffix = Date.now().toString(36);
+				filePath = normalizePath(`${folderPath}/${nameWithDate}_${suffix}.md`);
+			}
+		}
+
+		// Build frontmatter from form data
+		const frontmatter: Record<string, unknown> = {
+			'cal-type': 'calendar-event',
+			'calendar': formData.calendarName,
+			'cal-calendar-id': formData.calendarId,
+			'cal-event-id': '',
+			'title': formData.title,
+			'date': formData.date,
+			'startTime': formData.allDay ? null : (formData.startTime || null),
+			'endTime': formData.allDay ? null : (formData.endTime || null),
+			'endDate': formData.allDay ? null : (formData.endDate || null),
+			'allDay': formData.allDay,
+			'cal-location': formData.location || null,
+			'cal-description': formData.description || null,
+			'cal-attendees': null,
+			'cal-organizer': null,
+			'cal-status': 'confirmed',
+			'cal-video-link': null,
+			'tags': formData.tags.length > 0 ? formData.tags : null,
+			'people': formData.people.length > 0 ? formData.people : null,
+		};
+
+		// Get the note body from template (strip template frontmatter, keep body only)
 		const templateContent = await this.templateEngine.renderNewEventTemplate(
 			settings.newEventTemplatePath
 		);
+		const body = this.noteManager.extractBody(templateContent);
+
+		const content = this.noteManager.buildNoteContent(frontmatter, body);
 
 		try {
-			const file = await this.app.vault.create(filePath, templateContent);
+			const file = await this.app.vault.create(filePath, content);
 			const leaf = this.app.workspace.getLeaf(false);
 			await leaf.openFile(file);
 		} catch (err) {
 			console.error('Error creating new event note:', err);
 			new Notice('Failed to create new event note.');
-		}
-	}
-
-	private async getDefaultCalendarName(): Promise<string> {
-		const defaultId = this.settings.defaultCalendarId;
-		if (!defaultId || defaultId === 'primary') return 'Primary';
-		try {
-			const calendars = await this.api.fetcher.listCalendars();
-			const match = calendars.find(c => c.id === defaultId);
-			return match ? this.noteManager.sanitizeFilename(match.name) : 'Primary';
-		} catch {
-			return 'Primary';
 		}
 	}
 

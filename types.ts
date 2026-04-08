@@ -10,7 +10,6 @@ export interface GoogleCalendarSyncSettings {
 	autoSyncInterval: number;
 	lastSyncTime: string;
 	syncTokens: Record<string, string>;
-	noteTitleFormat: string;
 	templatePath: string;
 	newEventTemplatePath: string;
 	defaultCalendarId: string;
@@ -36,7 +35,6 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	autoSyncInterval: 15,
 	lastSyncTime: '',
 	syncTokens: {},
-	noteTitleFormat: '{title} {date}',
 	templatePath: '',
 	newEventTemplatePath: '',
 	defaultCalendarId: 'primary',
@@ -92,6 +90,21 @@ export interface GoogleCalendarListEntry {
 	color: string;
 	isPrimary: boolean;
 	accessRole: string;
+}
+
+export interface NewEventFormData {
+	title: string;
+	date: string;        // YYYY-MM-DD
+	startTime: string;   // HH:MM or empty
+	endTime: string;     // HH:MM or empty
+	endDate: string;     // YYYY-MM-DD or empty (for multi-day timed events)
+	allDay: boolean;
+	calendarId: string;
+	calendarName: string;
+	location: string;
+	description: string;
+	tags: string[];      // e.g. ['meeting', 'project-x']
+	people: string[];    // e.g. ['[[John Doe]]', '[[Jane Smith]]']
 }
 
 export interface SyncResult {
