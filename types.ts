@@ -21,6 +21,8 @@ export interface GoogleCalendarSyncSettings {
 	onNoteDeleteBehavior: 'ignore' | 'cancel' | 'delete';
 	showPushNotifications: boolean;
 	cachedCalendars: GoogleCalendarListEntry[];
+	calendarBasePath: string;
+	showCalendarRibbonButton: boolean;
 }
 
 export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
@@ -46,6 +48,8 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	onNoteDeleteBehavior: 'ignore',
 	showPushNotifications: true,
 	cachedCalendars: [],
+	calendarBasePath: '',
+	showCalendarRibbonButton: false,
 };
 
 export interface CalendarEventNote {

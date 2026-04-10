@@ -1,21 +1,22 @@
 # Google Calendar Sync for Obsidian
 
-Syncs your Google Calendar events as individual Obsidian notes with full YAML frontmatter properties. Use Obsidian Bases to build day, week, and month views — no DataView required.
+Syncs your Google Calendar events as individual Obsidian notes with full YAML frontmatter. Use Obsidian Bases to build interactive calendar views — no DataView required.
 
 ## Features
 
-- **Event-per-note sync** — each Google Calendar event becomes its own `.md` note
+- **Event-per-note sync** — each Google Calendar event becomes its own `.md` note in `Calendar/{CalendarName}/`
 - **Full frontmatter** — date, start/end time, attendees, location, video link, and more as queryable properties
-- **Multi-calendar support** — choose which calendars to sync; events organized into subfolders by calendar name
-- **Configurable sync window** — sync N days back and forward (default: 30/30)
-- **Two-way sync** — edit a note's date, time, title, or location and it syncs back to Google Calendar
-- **Create events from Obsidian** — create a note from the event template and it appears in Google Calendar
-- **Obsidian Bases ready** — filter `type = "calendar-event"` for day/week/month views
+- **Multi-calendar support** — choose which calendars to sync
+- **Vault-wide calendar events** — any note anywhere in your vault with `calendar` + `date` properties becomes a calendar event; the plugin creates it in Google and keeps it in sync
+- **Two-way sync** — edit a note's title, date, time, or location and it syncs back to Google Calendar within a few seconds
+- **Create events from Obsidian** — use the **New Calendar Event** command or click a time slot in a calendar view
+- **Interactive Bases calendar views** — built-in Month, Week, 7-day, 14-day, and 2-week views powered by TUI Calendar; click to edit, drag to reschedule, click empty slot to create
 - **Auto-sync** — configurable background sync interval
+- **Configurable sync window** — sync N days back and forward (default: 30/30)
 
 ## Requirements
 
-- Obsidian v0.15.0 or later (desktop only)
+- Obsidian v1.8 or later (desktop only; requires Obsidian Bases)
 - A Google account
 - A Google Cloud project with the **Google Calendar API** enabled
 
@@ -28,74 +29,60 @@ Syncs your Google Calendar events as individual Obsidian notes with full YAML fr
 #### Create a project and enable the Calendar API
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Click the project dropdown at the top → **New Project** → give it any name (e.g. "Obsidian Sync") → **Create**
-3. In the left sidebar go to **APIs & Services → Library**
-4. Search for **Google Calendar API** → click it → click **Enable**
-   - ⚠️ Do **not** enable the Tasks API — it is not used by this plugin
+2. Click the project dropdown → **New Project** → give it any name (e.g. "Obsidian Sync") → **Create**
+3. Go to **APIs & Services → Library**, search for **Google Calendar API** → **Enable**
 
 #### Configure the OAuth consent screen
 
-5. Go to **APIs & Services → OAuth consent screen**
-6. Choose your user type:
-   - **Internal** *(recommended)* — available if your account is on Google Workspace (work or school). No warnings, no test user setup required. Select this if you see it.
-   - **External** — required for personal Gmail accounts. You'll need to add yourself as a test user (step 9).
-7. Click **Create** and fill in the required fields:
-   - **App name**: anything (e.g. "Obsidian Calendar Sync")
-   - **User support email**: your email
-   - **Developer contact email**: your email
-8. Click **Save and Continue** through the Scopes screen (no scopes to add here)
-9. *(External only)* On the **Test users** screen click **+ Add Users** and add your Google account email
-10. Click **Save and Continue** → **Back to Dashboard**
+4. Go to **APIs & Services → OAuth consent screen**
+5. Choose your user type:
+   - **Internal** *(recommended)* — available if your account is on Google Workspace. No warnings, no test user setup required.
+   - **External** — required for personal Gmail accounts. Add yourself as a test user (step 8).
+6. Click **Create**, fill in App name, User support email, and Developer contact email
+7. Click **Save and Continue** through the Scopes screen
+8. *(External only)* On **Test users**, click **+ Add Users** and add your Google account email
 
 #### Create OAuth credentials
 
-11. Go to **APIs & Services → Credentials**
-12. Click **+ Create Credentials → OAuth client ID**
-13. Application type: **Desktop app**
-14. Name: anything (e.g. "Obsidian")
-15. Click **Create**
-16. Copy the **Client ID** and **Client Secret** — you'll paste these into the plugin settings
+9. Go to **APIs & Services → Credentials → + Create Credentials → OAuth client ID**
+10. Application type: **Desktop app**
+11. Click **Create**, then copy the **Client ID** and **Client Secret**
 
 ---
 
 ### 2. Plugin Configuration
 
-1. In Obsidian, open **Settings → Google Calendar Sync**
+1. Open **Settings → Google Calendar Sync**
 2. Paste your **Client ID** and **Client Secret**
-3. Click **Authorize** — your browser will open a Google sign-in page
-4. Sign in with the test user account you added in step 9 above
-5. Click through the Google consent screen
-   - **Internal apps**: no warnings, just click Allow
-   - **External apps in Testing mode**: you may see an "unverified app" warning — click **Advanced → Go to [app name] (unsafe)** to proceed
-6. The browser will show "Authorization successful!" and you can return to Obsidian
-7. Back in settings, click **Refresh calendar list** and toggle on the calendars you want to sync
-8. Click **Sync now** to do your first sync
+3. Click **Authorize** — sign in and allow access in the browser that opens
+4. Back in settings, click **Refresh calendar list** and toggle on the calendars you want to sync
+5. Click **Sync now** to run the first sync
 
 ---
 
 ## Note Format
 
-Each event creates a note like `Calendar/Work Calendar/Team Standup 2025-01-15.md`:
+Events synced from Google land in `Calendar/{CalendarName}/{title}.md`. If two events share the same title, the date is appended to the second one (`{title} {date}.md`).
 
 ```yaml
 ---
-type: calendar-event
+cal-type: calendar-event
 calendar: Work Calendar
-event-id: abc123_20250115T090000Z
+cal-event-id: abc123_20250115T090000Z
 title: Team Standup
 date: 2025-01-15
-start-time: "09:00"
-end-time: "09:30"
-all-day: false
-location: Conference Room A
-description: Daily standup
-attendees:
+startTime: "09:00"
+endTime: "09:30"
+allDay: false
+cal-location: Conference Room A
+cal-description: Daily standup
+cal-attendees:
   - alice@example.com
   - bob@example.com
-organizer: manager@example.com
-status: confirmed
-video-link: "https://meet.google.com/..."
-is-recurring: true
+cal-organizer: manager@example.com
+cal-status: confirmed
+cal-video-link: "https://meet.google.com/..."
+cal-is-recurring: true
 ---
 
 # Team Standup
@@ -103,26 +90,59 @@ is-recurring: true
 
 ---
 
-## Obsidian Bases Setup
+## Vault-Wide Calendar Events
 
-Create a Bases view on your `Calendar/` folder with `type = "calendar-event"` as the filter.
+Any note in your vault — not just notes in the Calendar folder — can become a Google Calendar event. Just add `calendar` and `date` to its frontmatter:
 
-**Day view** — embed in a daily note, filter by date matching today:
+```yaml
+---
+title: Doctor Appointment
+date: 2025-03-20
+calendar: Personal
+startTime: "14:00"
+endTime: "15:00"
+---
 ```
-type = "calendar-event" AND date = "2025-01-15"
-```
 
-**Week/Month view** — filter by date range, sort by `start-time` ascending.
+The plugin will create the event in Google Calendar on the next save, write back the `cal-event-id`, and keep the note in sync. The note's filename and location are never changed by the plugin — only the frontmatter is managed.
 
-The `type`, `date`, `start-time`, `calendar`, and `status` properties are the most useful for filtering and grouping.
+---
+
+## Calendar Views
+
+The plugin registers five Bases view types:
+
+| View | ID |
+|------|----|
+| Month Calendar | `cal-month` |
+| Week Calendar | `cal-week` |
+| 7-Day Lookahead | `cal-7day` |
+| 14-Day Lookahead | `cal-14day` |
+| 2-Week Calendar | `cal-2week` |
+
+Add one of these views to any `.base` file. In the view options, set the **Calendar name property** to `calendar`.
+
+**Interactions:**
+- **Click an event** — opens the edit modal
+- **Drag or resize an event** — reschedules it and syncs to Google
+- **Click an empty time slot** — opens the create modal with the date/time pre-filled
+
+### Ribbon Button
+
+Enable **Show calendar ribbon button** in settings and set **Calendar base path** to open your `.base` file directly from the ribbon. The **Open Calendar** command in the command palette always works regardless of this setting.
 
 ---
 
 ## Two-Way Sync
 
-**Editing existing events:** Change `title`, `date`, `start-time`, `end-time`, `location`, or `description` in a note's frontmatter and save. The plugin will push the update to Google Calendar within 2 seconds.
+**Editing existing events:** Change `title`, `date`, `startTime`, `endTime`, `cal-location`, or `cal-description` in a note's frontmatter and save. The plugin pushes the update to Google Calendar within a few seconds.
 
-**Creating new events:** Use the **New Calendar Event** command (or the ribbon icon menu). A note opens with a pre-filled template — fill in at least `title`, `date`, and `calendar`, then save. The plugin creates the event in Google Calendar and writes the `event-id` back to the note.
+**Creating new events from Obsidian:**
+- Use the **New Calendar Event** command, or
+- Click a time slot in a calendar view, or
+- Add `calendar` + `date` to any existing note
+
+In all cases the plugin creates the event in Google and writes `cal-event-id` back to the note.
 
 ---
 
@@ -133,11 +153,13 @@ main.ts              — Plugin entry point, wires all services
 types.ts             — Shared TypeScript interfaces and defaults
 calendarFetcher.ts   — Google Calendar API: list calendars, fetch events
 googleCalendarAPI.ts — Auth wrapper + createEvent/updateEvent
-noteManager.ts       — Vault file CRUD, frontmatter serialization
+noteManager.ts       — Vault file CRUD, frontmatter serialization, event index
 templateEngine.ts    — {{variable}} substitution for note bodies
 syncEngine.ts        — G→O sync orchestration, auto-sync timer
-twoWaySync.ts        — O→G file watcher, new event creation
+twoWaySync.ts        — O→G file watcher, new event creation, conflict resolution
 settingsTab.ts       — Plugin settings UI
+basesCalendarView.ts — TUI Calendar Bases view implementations
+createEventModal.ts  — Create/edit event modal
 oauthServer.ts       — Local OAuth 2.0 callback server
 ```
 
@@ -159,11 +181,11 @@ git clone <repo>
 cd ObsidianGoogleCalendarSync
 npm install
 
-# Watch mode (dev)
-npm run dev
-
 # Production build
 node esbuild.config.mjs production
+
+# Type check only
+npx tsc -noEmit -skipLibCheck
 ```
 
 Symlink into a vault for live development:
@@ -180,10 +202,12 @@ ln -sf "$(pwd)/styles.css"    "$PLUGIN_DIR/styles.css"
 
 ## Troubleshooting
 
-**"Access blocked: app not verified"** — This only appears for External apps in Testing mode. Click **Advanced → Go to [app name] (unsafe)**. To avoid this entirely, set up your OAuth consent screen as **Internal** (requires a Google Workspace account).
+**"Access blocked: app not verified"** — Click **Advanced → Go to [app name] (unsafe)**. To avoid this, set up your OAuth consent screen as **Internal** (requires Google Workspace).
 
-**"Google Calendar: not authorized"** — Click Authorize in plugin settings. If you previously authorized with the old plugin version, you must re-authorize because the OAuth scopes changed.
+**"Google Calendar: not authorized"** — Click Authorize in plugin settings.
 
-**Events not appearing** — Check that the calendar is toggled on in settings, and that the event falls within your sync window (days back/forward).
+**Events not appearing** — Check that the calendar is toggled on in settings and the event falls within your sync window.
 
-**Two-way sync not working** — The plugin needs `calendar.events` write scope. If you authorized before v2.0, click Re-authorize in settings.
+**Two-way sync not working** — The plugin needs `calendar.events` write scope. If you authorized with an older version, click Re-authorize in settings.
+
+**Table view header broken after using calendar view** — Update to the latest version; this was fixed by removing the `cal-view-container` class on view unload.

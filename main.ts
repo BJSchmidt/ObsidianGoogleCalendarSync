@@ -96,11 +96,24 @@ export default class GoogleCalendarSync extends Plugin {
 			this.syncEngine.runSync();
 		});
 
+		// Ribbon icon to open the calendar base file (opt-in in settings)
+		if (this.settings.showCalendarRibbonButton) {
+			this.addRibbonIcon('calendar', 'Open Calendar', () => {
+				this.openCalendarBase();
+			});
+		}
+
 		// Commands
 		this.addCommand({
 			id: 'sync-google-calendar',
 			name: 'Sync Google Calendar',
 			callback: () => this.syncEngine.runSync(),
+		});
+
+		this.addCommand({
+			id: 'open-calendar-base',
+			name: 'Open Calendar',
+			callback: () => this.openCalendarBase(),
 		});
 
 		this.addCommand({
@@ -267,6 +280,21 @@ export default class GoogleCalendarSync extends Plugin {
 			console.error('Error during OAuth flow:', error);
 			new Notice('Authorization failed. Check the console for details.');
 		}
+	}
+
+	private async openCalendarBase(): Promise<void> {
+		const path = this.settings.calendarBasePath;
+		if (!path) {
+			new Notice('Set a Calendar base path in plugin settings.');
+			return;
+		}
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			new Notice(`Calendar base not found: ${path}`);
+			return;
+		}
+		const leaf = this.app.workspace.getLeaf(false);
+		await leaf.openFile(file);
 	}
 
 	private openCreateEventModal(): void {

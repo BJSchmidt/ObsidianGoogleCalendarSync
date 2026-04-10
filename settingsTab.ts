@@ -230,6 +230,27 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 		// ── Note Settings ────────────────────────────────────────────────────
 		new Setting(containerEl).setName('Note Settings').setHeading();
 
+		new Setting(containerEl)
+			.setName('Show calendar ribbon button')
+			.setDesc('Add a ribbon icon that opens your calendar base file. Takes effect after reloading the plugin.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.showCalendarRibbonButton)
+				.onChange((value) => {
+					this.plugin.settings.showCalendarRibbonButton = value;
+					this.debouncedSave();
+				}));
+
+		new Setting(containerEl)
+			.setName('Calendar base path')
+			.setDesc('Path to your .base file opened by the ribbon button and Open Calendar command.')
+			.addText(text => text
+				.setPlaceholder('Calendar.base')
+				.setValue(this.plugin.settings.calendarBasePath)
+				.onChange((value) => {
+					this.plugin.settings.calendarBasePath = value;
+					this.debouncedSave();
+				}));
+
 new Setting(containerEl)
 			.setName('Note body template')
 			.setDesc('Path to a vault note used as the body template for synced event notes. Leave empty to use the default (# {{title}}). Supports {{title}}, {{date}}, {{startTime}}, {{location}}, etc.')
