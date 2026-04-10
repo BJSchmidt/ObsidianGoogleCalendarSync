@@ -65,6 +65,8 @@ export default class GoogleCalendarSync extends Plugin {
 			// read or write any notes.  No-op if Obsidian Sync is not enabled.
 			await this.waitForObsidianSync();
 
+			await this.provisionDefaultTemplate();
+
 			try {
 				await this.twoWaySync.initialize();
 			} catch (err) {
@@ -513,6 +515,45 @@ export default class GoogleCalendarSync extends Plugin {
 				resolve();
 			});
 		});
+	}
+
+	private async provisionDefaultTemplate(): Promise<void> {
+		if (this.settings.newEventTemplatePath) return;
+		const templatePath = 'Resources/Templates/Calendar Event.md';
+		const templateContent = [
+			'---',
+			'cal-type: calendar-event',
+			'calendar: ',
+			'title: ',
+			'date: ',
+			'startTime: ',
+			'endTime: ',
+			'allDay: false',
+			'endDate: ',
+			'cal-location: ',
+			'cal-description: ',
+			'cal-attendees:',
+			'  - ',
+			'cal-status: confirmed',
+			'---',
+			'',
+			'# ',
+			'',
+		].join('\n');
+
+		const existing = this.app.vault.getAbstractFileByPath(templatePath);
+		if (!existing) {
+			try {
+				await this.app.vault.adapter.mkdir('Resources/Templates');
+			} catch { /* folder already exists */ }
+			try {
+				await this.app.vault.create(templatePath, templateContent);
+			} catch {
+				return; // vault may not allow creation here; user can set path manually
+			}
+		}
+		this.settings.newEventTemplatePath = templatePath;
+		await this.saveSettings();
 	}
 
 	private rebuildServices(): void {

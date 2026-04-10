@@ -140,7 +140,8 @@ Enable **Show calendar ribbon button** in settings and set **Calendar base path*
 **Creating new events from Obsidian:**
 - Use the **New Calendar Event** command, or
 - Click a time slot in a calendar view, or
-- Add `calendar` + `date` to any existing note
+- Add `calendar` + `date` to any existing note, or
+- Duplicate `Resources/Templates/Calendar Event.md` and fill in the properties
 
 In all cases the plugin creates the event in Google and writes `cal-event-id` back to the note.
 
