@@ -139,6 +139,17 @@ export default class GoogleCalendarSync extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'add-to-calendar',
+			name: 'Add to Calendar',
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== 'md') return false;
+				if (!checking) this.openAddToCalendarModal(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: 're-sync-google-calendar-force',
 			name: 'Force re-sync Google Calendar (refresh all notes)',
 			callback: () => this.syncEngine.runForceResync(),
@@ -403,6 +414,97 @@ export default class GoogleCalendarSync extends Plugin {
 		} catch (err) {
 			console.error('Error updating event note:', err);
 			new Notice('Failed to update event note.');
+		}
+	}
+
+	private async openAddToCalendarModal(file: TFile): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const fm = this.noteManager.parseFrontmatter(content);
+
+		// Case 1: already a synced event → edit it
+		if (fm['cal-event-id']) {
+			this.openEditEventModal(file);
+			return;
+		}
+
+		// Case 2: has calendar + date but no event-id → two-way sync will pick it up
+		if ((fm['calendar'] || fm['cal-calendar']) && fm['date']) {
+			new Notice('This note will be added to Google Calendar on the next sync.');
+			return;
+		}
+
+		// Case 3: open modal to write calendar properties onto this note
+		const settings = this.settings;
+		let calendars = (settings.cachedCalendars || [])
+			.filter(c => settings.enabledCalendars.includes(c.id));
+		if (calendars.length === 0) {
+			calendars = [{
+				id: settings.defaultCalendarId || 'primary',
+				name: 'Primary',
+				color: '#4285F4',
+				isPrimary: true,
+				accessRole: 'owner',
+			}];
+		}
+
+		const initialData: NewEventFormData = {
+			title: String(fm['title'] ?? file.basename),
+			date: String(fm['date'] ?? new Date().toISOString().slice(0, 10)),
+			startTime: '',
+			endTime: '',
+			endDate: '',
+			allDay: false,
+			calendarId: settings.defaultCalendarId || 'primary',
+			calendarName: calendars[0]?.name ?? 'Primary',
+			location: '',
+			description: '',
+			tags: Array.isArray(fm['tags']) ? fm['tags'].map(String) : [],
+			people: Array.isArray(fm['people']) ? fm['people'].map(String) : [],
+		};
+
+		new CalendarEventModal(
+			this.app,
+			calendars,
+			settings.defaultCalendarId,
+			(formData) => this.addNoteToCalendar(file, formData),
+			initialData,
+		).open();
+	}
+
+	private async addNoteToCalendar(file: TFile, formData: NewEventFormData): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const existingFm = this.noteManager.parseFrontmatter(content);
+		const body = this.noteManager.extractBody(content);
+
+		// Merge calendar properties into existing frontmatter.
+		// Don't set cal-event-id — two-way sync assigns it after the next save.
+		const merged: Record<string, unknown> = {
+			...existingFm,
+			'cal-type': 'calendar-event',
+			'calendar': formData.calendarName,
+			'cal-calendar-id': formData.calendarId,
+			'title': formData.title,
+			'date': formData.date,
+			'startTime': formData.allDay ? null : (formData.startTime || null),
+			'endTime': formData.allDay ? null : (formData.endTime || null),
+			'endDate': formData.allDay ? null : (formData.endDate || null),
+			'allDay': formData.allDay,
+			'cal-location': formData.location || null,
+			'cal-description': formData.description || null,
+			'cal-status': 'confirmed',
+			'tags': formData.tags.length > 0 ? formData.tags : (existingFm['tags'] ?? null),
+			'people': formData.people.length > 0 ? formData.people : (existingFm['people'] ?? null),
+		};
+		delete merged['cal-calendar'];
+
+		const newContent = this.noteManager.buildNoteContent(merged, body);
+
+		try {
+			await this.app.vault.modify(file, newContent);
+			new Notice('Note added to calendar — will sync to Google on next sync.');
+		} catch (err) {
+			console.error('Error adding note to calendar:', err);
+			new Notice('Failed to update note.');
 		}
 	}
 
