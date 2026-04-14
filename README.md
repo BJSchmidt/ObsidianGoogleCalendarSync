@@ -9,7 +9,7 @@ Syncs your Google Calendar events as individual Obsidian notes with full YAML fr
 - **Multi-calendar support** — choose which calendars to sync
 - **Vault-wide calendar events** — any note anywhere in your vault with `calendar` + `date` properties becomes a calendar event; the plugin creates it in Google and keeps it in sync
 - **Two-way sync** — edit a note's title, date, time, or location and it syncs back to Google Calendar within a few seconds
-- **Create events from Obsidian** — use the **New Calendar Event** command or click a time slot in a calendar view
+- **Create events from Obsidian** — use the **New Calendar Event** command, click a time slot in a calendar view, or use **Add to Calendar** to schedule any existing note
 - **Interactive Bases calendar views** — built-in Month, Week, 7-day, 14-day, and 2-week views powered by TUI Calendar; click to edit, drag to reschedule, click empty slot to create
 - **Auto-sync** — configurable background sync interval
 - **Configurable sync window** — sync N days back and forward (default: 30/30)
@@ -138,12 +138,18 @@ Enable **Show calendar ribbon button** in settings and set **Calendar base path*
 **Editing existing events:** Change `title`, `date`, `startTime`, `endTime`, `cal-location`, or `cal-description` in a note's frontmatter and save. The plugin pushes the update to Google Calendar within a few seconds.
 
 **Creating new events from Obsidian:**
-- Use the **New Calendar Event** command, or
+- Use the **New Calendar Event** command to create a new note + event in one step, or
+- Use **Add to Calendar** on any open note to schedule it — opens a form pre-filled with the note's title, writes calendar properties into the existing frontmatter, and syncs to Google on the next cycle, or
 - Click a time slot in a calendar view, or
-- Add `calendar` + `date` to any existing note, or
-- Duplicate `Resources/Templates/Calendar Event.md` and fill in the properties
+- Add `calendar` + `date` to any existing note manually, or
+- Duplicate `Resources/Templates/Calendar Event.md` and fill in the properties, or
+- Use Templater's **Insert template** or **Create note from template** commands with `Resources/Templates/Calendar Event.md`
 
 In all cases the plugin creates the event in Google and writes `cal-event-id` back to the note.
+
+**Add to Calendar** also handles notes that are already calendar events:
+- If the note has a `cal-event-id` → opens the Edit Calendar Event form
+- If the note has `calendar` + `date` but no `cal-event-id` → shows a notice that it will sync automatically
 
 ---
 
