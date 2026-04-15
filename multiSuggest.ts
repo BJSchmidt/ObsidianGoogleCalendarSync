@@ -48,7 +48,10 @@ export class MultiValueInput {
 		this.values.push(trimmed);
 		this.renderChips();
 		this.inputEl.value = '';
-		this.inputEl.focus();
+		// Defer focus so it runs after the suggest dropdown finishes its own
+		// blur/close handling — otherwise the synchronous focus() call re-enters
+		// the suggest lifecycle mid-teardown and causes a removeChild DOM crash.
+		window.setTimeout(() => this.inputEl.focus(), 0);
 	}
 
 	removeValue(value: string): void {
@@ -122,7 +125,7 @@ export class TagSuggest extends AbstractInputSuggest<string> {
 
 	selectSuggestion(value: string, _evt: MouseEvent | KeyboardEvent): void {
 		this.onSelectCallback(value);
-		this.setValue('');
+		this.close();
 	}
 }
 
@@ -169,6 +172,6 @@ export class PeopleSuggest extends AbstractInputSuggest<string> {
 	selectSuggestion(value: string, _evt: MouseEvent | KeyboardEvent): void {
 		// Store as wiki-link format
 		this.onSelectCallback(`[[${value}]]`);
-		this.setValue('');
+		this.close();
 	}
 }
