@@ -51,6 +51,7 @@ interface CalendarEvent {
 	startTime: string; // HH:MM or ''
 	endTime: string; // HH:MM or ''
 	allDay: boolean;
+	endDate: string; // YYYY-MM-DD or '' for single-day events
 	file: TFile;
 	calendarName: string;
 }
@@ -79,6 +80,7 @@ function extractEvents(view: BasesView): CalendarEvent[] {
 		const dateStr = dateVal.slice(0, 10);
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
 
+		const endDateVal = valueToString(entry.getValue("note.endDate")).slice(0, 10);
 		events.push({
 			id: entry.file.path,
 			title:
@@ -87,6 +89,7 @@ function extractEvents(view: BasesView): CalendarEvent[] {
 			startTime: valueToString(entry.getValue(startTimeProp)),
 			endTime: valueToString(entry.getValue(endTimeProp)),
 			allDay: valueToString(entry.getValue(allDayProp)) === "true",
+			endDate: /^\d{4}-\d{2}-\d{2}$/.test(endDateVal) ? endDateVal : "",
 			file: entry.file,
 			calendarName: valueToString(entry.getValue(calendarProp)),
 		});
@@ -136,12 +139,17 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		const calId = ev.calendarName || "default";
 
 		if (ev.allDay || !ev.startTime) {
+			// TUI Calendar requires plain YYYY-MM-DD strings for all-day events.
+			// Passing datetime strings (T00:00:00 / T23:59:59) causes it to measure
+			// duration in milliseconds with undefined rounding, producing wrong spans.
+			// endDate is the last inclusive day; fall back to date for single-day events.
+			const endDate = ev.endDate || ev.date;
 			return {
 				id: ev.id,
 				calendarId: calId,
 				title: ev.title,
-				start: `${ev.date}T00:00:00`,
-				end: `${ev.date}T23:59:59`,
+				start: ev.date,
+				end: endDate,
 				isAllday: true,
 				category: "allday",
 				raw: { file: ev.file },
