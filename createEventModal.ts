@@ -19,6 +19,7 @@ export class CalendarEventModal extends Modal {
 		defaultCalendarId: string,
 		onSubmit: (data: NewEventFormData) => void,
 		initialData?: NewEventFormData,
+		private eventLink?: string,
 	) {
 		super(app);
 		this.onSubmit = onSubmit;
@@ -227,12 +228,18 @@ export class CalendarEventModal extends Modal {
 				.onChange(v => { this.formData.description = v; }));
 		descSetting.controlEl.addClass('cal-modal-wide-control');
 
-		// Submit button
-		new Setting(contentEl)
-			.addButton(btn => btn
-				.setButtonText(this.isEdit ? 'Save changes' : 'Create event')
-				.setCta()
-				.onClick(() => this.submit()));
+		// Action buttons
+		const buttonRow = new Setting(contentEl);
+		if (this.isEdit && this.eventLink) {
+			buttonRow.addButton(btn => btn
+				.setButtonText('Open in Google Calendar')
+				.setIcon('external-link')
+				.onClick(() => window.open(this.eventLink!, '_blank')));
+		}
+		buttonRow.addButton(btn => btn
+			.setButtonText(this.isEdit ? 'Save changes' : 'Create event')
+			.setCta()
+			.onClick(() => this.submit()));
 
 		// Auto-focus the title input
 		const titleInput = contentEl.querySelector<HTMLInputElement>('input[type="text"]');

@@ -666,6 +666,7 @@ abstract class BaseTuiCalendarView extends BasesView {
 				await plugin.updateEventFromModal(file, formData);
 			},
 			initialData,
+			String(fm["cal-event-link"] ?? ""),
 		).open();
 	}
 

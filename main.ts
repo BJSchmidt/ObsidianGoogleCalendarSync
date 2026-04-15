@@ -379,6 +379,7 @@ export default class GoogleCalendarSync extends Plugin {
 			settings.defaultCalendarId,
 			(formData) => this.updateEventFromModal(file, formData),
 			initialData,
+			String(fm['cal-event-link'] ?? ''),
 		).open();
 	}
 
