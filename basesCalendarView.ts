@@ -153,21 +153,19 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		const calId = ev.calendarName || "default";
 
 		if (ev.allDay || !ev.startTime) {
-			// TUI Calendar v2 uses exclusive end dates for all-day events.
-			// Use LOCAL-time datetime strings (no Z suffix) so JavaScript parses them
-			// as local midnight — date-only strings like "2026-04-11" get parsed as
-			// UTC midnight, which in non-UTC timezones shifts the event onto the
-			// previous day visually.
-			// e.g. single-day on 4/11 in UTC-6:
-			//   "2026-04-11T00:00:00" → local 4/11 00:00 ✓
-			//   "2026-04-11"          → UTC 4/11 00:00 = local 4/10 18:00 ✗
+			// TUI Calendar v2 treats all-day event end as INCLUSIVE. A single-day
+			// event uses the same date for start and end; use end-of-day local
+			// time (23:59:59) rather than midnight so the event clearly occupies
+			// the last day's full cell. Local-time datetime strings avoid the
+			// UTC-midnight parsing shift that moves events onto the prior day
+			// in negative-offset timezones.
 			const lastInclusiveDay = ev.endDate || ev.date;
 			return {
 				id: ev.id,
 				calendarId: calId,
 				title: ev.title,
 				start: `${ev.date}T00:00:00`,
-				end: `${addOneDay(lastInclusiveDay)}T00:00:00`,
+				end: `${lastInclusiveDay}T23:59:59`,
 				isAllday: true,
 				category: "allday",
 				raw: { file: ev.file },
