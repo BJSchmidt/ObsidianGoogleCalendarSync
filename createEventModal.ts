@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting } from 'obsidian';
+import { App, Modal, Notice, Setting, TFile } from 'obsidian';
 import { GoogleCalendarListEntry, GoogleCalendarSyncSettings, NewEventFormData } from './types';
 import { MultiValueInput, TagSuggest, PeopleSuggest } from './multiSuggest';
 
@@ -20,6 +20,7 @@ export class CalendarEventModal extends Modal {
 		onSubmit: (data: NewEventFormData) => void,
 		initialData?: NewEventFormData,
 		private eventLink?: string,
+		private noteFile?: TFile,
 	) {
 		super(app);
 		this.onSubmit = onSubmit;
@@ -230,6 +231,15 @@ export class CalendarEventModal extends Modal {
 
 		// Action buttons
 		const buttonRow = new Setting(contentEl);
+		if (this.isEdit && this.noteFile) {
+			buttonRow.addButton(btn => btn
+				.setButtonText('Open note')
+				.setIcon('file-text')
+				.onClick(() => {
+					this.app.workspace.getLeaf(false).openFile(this.noteFile!);
+					this.close();
+				}));
+		}
 		if (this.isEdit && this.eventLink) {
 			buttonRow.addButton(btn => btn
 				.setButtonText('Open in Google Calendar')

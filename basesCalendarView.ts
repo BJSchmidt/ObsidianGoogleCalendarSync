@@ -667,6 +667,7 @@ abstract class BaseTuiCalendarView extends BasesView {
 			},
 			initialData,
 			String(fm["cal-event-link"] ?? ""),
+			file,
 		).open();
 	}
 
