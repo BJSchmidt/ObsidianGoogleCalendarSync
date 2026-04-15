@@ -134,22 +134,36 @@ const DEFAULT_PALETTE = [
 	"#039be5",
 ];
 
+/** Add one calendar day to a YYYY-MM-DD string. Uses noon to avoid DST edge cases. */
+function addOneDay(dateStr: string): string {
+	const d = new Date(dateStr + "T12:00:00");
+	d.setDate(d.getDate() + 1);
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Subtract one calendar day from a YYYY-MM-DD string. Uses noon to avoid DST edge cases. */
+function subOneDay(dateStr: string): string {
+	const d = new Date(dateStr + "T12:00:00");
+	d.setDate(d.getDate() - 1);
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 	return events.map((ev) => {
 		const calId = ev.calendarName || "default";
 
 		if (ev.allDay || !ev.startTime) {
-			// TUI Calendar requires plain YYYY-MM-DD strings for all-day events.
-			// Passing datetime strings (T00:00:00 / T23:59:59) causes it to measure
-			// duration in milliseconds with undefined rounding, producing wrong spans.
-			// endDate is the last inclusive day; fall back to date for single-day events.
-			const endDate = ev.endDate || ev.date;
+			// TUI Calendar v2 uses exclusive end dates for all-day events (same as
+			// Google Calendar API / RFC 5545). Our frontmatter endDate is the last
+			// inclusive day, so we add one day when passing to TUI Calendar.
+			// e.g. single-day on 4/11: start="2026-04-11", end="2026-04-12"
+			const lastInclusiveDay = ev.endDate || ev.date;
 			return {
 				id: ev.id,
 				calendarId: calId,
 				title: ev.title,
 				start: ev.date,
-				end: endDate,
+				end: addOneDay(lastInclusiveDay),
 				isAllday: true,
 				category: "allday",
 				raw: { file: ev.file },
@@ -581,8 +595,15 @@ abstract class BaseTuiCalendarView extends BasesView {
 				}
 				if (changes.end) {
 					const end = new Date(changes.end as any);
-					fm["endDate"] = end.toISOString().slice(0, 10);
-					if (!changes.isAllday && !fm["allDay"]) {
+					const isAllday = changes.isAllday ?? Boolean(fm["allDay"]);
+					if (isAllday) {
+						// TUI Calendar reports exclusive end for all-day events; store inclusive.
+						// Clear endDate if it equals the start date (single-day event).
+						const exclusiveEndStr = end.toISOString().slice(0, 10);
+						const inclusiveEndStr = subOneDay(exclusiveEndStr);
+						fm["endDate"] = inclusiveEndStr !== fm["date"] ? inclusiveEndStr : null;
+					} else {
+						fm["endDate"] = end.toISOString().slice(0, 10);
 						fm["endTime"] = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
 					}
 				}
@@ -692,7 +713,10 @@ abstract class BaseTuiCalendarView extends BasesView {
 		const pad = (n: number) => String(n).padStart(2, "0");
 		const dateStr = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
 
-		const endDateStr = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
+		// TUI Calendar provides exclusive end dates. For all-day events subtract 1 day
+		// to get the last inclusive day; for timed events the end is already correct.
+		const exclusiveEndStr = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
+		const endDateStr = isAllday ? subOneDay(exclusiveEndStr) : exclusiveEndStr;
 		const initialData: NewEventFormData = {
 			title: "",
 			date: dateStr,
