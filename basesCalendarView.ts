@@ -153,19 +153,20 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		const calId = ev.calendarName || "default";
 
 		if (ev.allDay || !ev.startTime) {
-			// TUI Calendar v2 treats all-day event end as INCLUSIVE. A single-day
-			// event uses the same date for start and end; use end-of-day local
-			// time (23:59:59) rather than midnight so the event clearly occupies
-			// the last day's full cell. Local-time datetime strings avoid the
-			// UTC-midnight parsing shift that moves events onto the prior day
-			// in negative-offset timezones.
+			// Build Date objects explicitly in local time — avoids any ISO-string
+			// parsing ambiguity between UTC and local interpretations in
+			// TUI Calendar v2. Single-day all-day events use the same date
+			// for start and end; end uses 23:59:59 so TUI treats it as
+			// inclusive of the last day.
 			const lastInclusiveDay = ev.endDate || ev.date;
+			const [sy, sm, sd] = ev.date.split("-").map(Number);
+			const [ey, em, ed] = lastInclusiveDay.split("-").map(Number);
 			return {
 				id: ev.id,
 				calendarId: calId,
 				title: ev.title,
-				start: `${ev.date}T00:00:00`,
-				end: `${lastInclusiveDay}T23:59:59`,
+				start: new Date(sy, sm - 1, sd, 0, 0, 0),
+				end: new Date(ey, em - 1, ed, 23, 59, 59),
 				isAllday: true,
 				category: "allday",
 				raw: { file: ev.file },
