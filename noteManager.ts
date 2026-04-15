@@ -177,20 +177,44 @@ export class NoteManager {
 	}
 
 	async createEventNote(event: CalendarEventNote, body: string): Promise<TFile> {
-		const path = this.getNotePathForEvent(event);
-		const folderPath = path.substring(0, path.lastIndexOf('/'));
-		await this.ensureFolderExists(folderPath);
+		const primaryPath = this.getNotePathForEvent(event);
+		const baseFolder = primaryPath.substring(0, primaryPath.lastIndexOf('/'));
+		await this.ensureFolderExists(baseFolder);
 
 		const content = this.buildNoteContent(this.buildFrontmatter(event), body);
 
-		this.writeDepth++;
-		try {
-			const file = await this.app.vault.create(path, content);
-			this.eventIndex.set(event.eventId, file.path);
-			return file;
-		} finally {
-			this.writeDepth--;
+		const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+		const suffix = event.eventId.slice(-6);
+
+		// Build fallback candidates.  On case-insensitive filesystems (macOS),
+		// vault.getAbstractFileByPath() (case-sensitive) may report a path as free
+		// while the OS already has a file with different capitalisation there.
+		// vault.create() then throws "File already exists." — same try-fallback
+		// strategy used in renameIfNeeded() handles this gracefully.
+		const seen = new Set<string>();
+		const candidates = [
+			primaryPath,
+			normalizePath(`${baseFolder}/${nameWithDate}.md`),
+			normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`),
+		].filter(p => seen.has(p) ? false : (seen.add(p), true));
+
+		for (const candidate of candidates) {
+			this.writeDepth++;
+			try {
+				const file = await this.app.vault.create(candidate, content);
+				this.eventIndex.set(event.eventId, file.path);
+				return file;
+			} catch (err: any) {
+				if ((err?.message ?? '').toLowerCase().includes('already exists')) {
+					continue; // case-insensitive collision — try next candidate
+				}
+				throw err;
+			} finally {
+				this.writeDepth--;
+			}
 		}
+
+		throw new Error(`Could not create a note for "${event.title}": all candidate paths already exist on disk.`);
 	}
 
 	async updateEventNote(file: TFile, event: CalendarEventNote): Promise<TFile> {
