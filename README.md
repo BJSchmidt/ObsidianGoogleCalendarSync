@@ -123,9 +123,11 @@ The plugin registers five Bases view types:
 Add one of these views to any `.base` file. In the view options, set the **Calendar name property** to `calendar`.
 
 **Interactions:**
-- **Click an event** — opens the edit modal
+- **Click an event** — opens the edit modal, with shortcut buttons to open the underlying note or jump to the event in Google Calendar
 - **Drag or resize an event** — reschedules it and syncs to Google
 - **Click an empty time slot** — opens the create modal with the date/time pre-filled
+
+The edit modal also handles notes that aren't linked to a calendar (e.g. tasks with just a `date`) — the calendar dropdown shows **(Not on calendar)** so you can either leave it as a plain dated note or assign it to a calendar to start syncing.
 
 ### Ribbon Button
 
