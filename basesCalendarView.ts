@@ -534,14 +534,9 @@ abstract class BaseTuiCalendarView extends BasesView {
 			useFormPopup: false,
 			useDetailPopup: false,
 			gridSelection: true,
-			timezone: {
-				zones: [
-					{
-						timezoneName:
-							Intl.DateTimeFormat().resolvedOptions().timeZone,
-					},
-				],
-			},
+			// Omit `timezone` so TUI uses "Local" — passing a named timezone
+			// triggers its extended filter range (±1 day) and a DST-adjustment
+			// path that can shift all-day events onto adjacent cells.
 			theme: getTuiTheme(),
 			template: buildTimeTemplates(use12h),
 			week: {
