@@ -174,12 +174,17 @@ export class CalendarEventModal extends Modal {
 		new Setting(contentEl)
 			.setName('Calendar')
 			.addDropdown(dropdown => {
+				dropdown.addOption('', '(Not on calendar)');
 				for (const cal of this.enabledCalendars) {
 					dropdown.addOption(cal.id, cal.name);
 				}
 				dropdown.setValue(this.formData.calendarId);
 				dropdown.onChange(id => {
 					this.formData.calendarId = id;
+					if (!id) {
+						this.formData.calendarName = '';
+						return;
+					}
 					const match = this.enabledCalendars.find(c => c.id === id);
 					this.formData.calendarName = match?.name ?? 'Primary';
 				});

@@ -155,9 +155,9 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		if (ev.allDay || !ev.startTime) {
 			// Build Date objects explicitly in local time — avoids any ISO-string
 			// parsing ambiguity between UTC and local interpretations in
-			// TUI Calendar v2. Single-day all-day events use the same date
-			// for start and end; end uses 23:59:59 so TUI treats it as
-			// inclusive of the last day.
+			// TUI Calendar v2. Use noon local time so rendering paths that
+			// round to date-only (or truncate to hour-of-day) don't tip the
+			// event onto an adjacent cell in the week view's all-day row.
 			const lastInclusiveDay = ev.endDate || ev.date;
 			const [sy, sm, sd] = ev.date.split("-").map(Number);
 			const [ey, em, ed] = lastInclusiveDay.split("-").map(Number);
@@ -165,8 +165,8 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 				id: ev.id,
 				calendarId: calId,
 				title: ev.title,
-				start: new Date(sy, sm - 1, sd, 0, 0, 0),
-				end: new Date(ey, em - 1, ed, 23, 59, 59),
+				start: new Date(sy, sm - 1, sd, 12, 0, 0),
+				end: new Date(ey, em - 1, ed, 12, 0, 0),
 				isAllday: true,
 				category: "allday",
 				raw: { file: ev.file },
@@ -671,17 +671,32 @@ abstract class BaseTuiCalendarView extends BasesView {
 		const content = await this.app.vault.read(file);
 		const fm = plugin.noteManager?.parseFrontmatter(content) ?? {};
 
+		// Date values may be ISO datetimes ("2026-04-08T15:35:00") or plain
+		// dates — HTML <input type="date"> only accepts YYYY-MM-DD.
+		const dateToYmd = (v: unknown): string => {
+			const s = String(v ?? "");
+			const match = s.match(/^(\d{4}-\d{2}-\d{2})/);
+			return match ? match[1] : "";
+		};
+
+		// Files without a `calendar` property aren't linked to any calendar —
+		// show empty rather than misleadingly defaulting to the plugin's
+		// default calendar.
+		const hasCalendar = fm["calendar"] != null || fm["cal-calendar"] != null;
+
 		const initialData: NewEventFormData = {
-			title: String(fm["title"] ?? ""),
-			date: String(fm["date"] ?? ""),
+			title: String(fm["title"] ?? file.basename),
+			date: dateToYmd(fm["date"]),
 			startTime: String(fm["startTime"] ?? ""),
 			endTime: String(fm["endTime"] ?? ""),
-			endDate: String(fm["endDate"] ?? ""),
+			endDate: dateToYmd(fm["endDate"]),
 			allDay: Boolean(fm["allDay"] ?? false),
-			calendarId: String(
-				fm["cal-calendar-id"] ?? defaultCalendarId ?? "primary",
-			),
-			calendarName: String(fm["calendar"] ?? fm["cal-calendar"] ?? "Primary"),
+			calendarId: hasCalendar
+				? String(fm["cal-calendar-id"] ?? defaultCalendarId ?? "primary")
+				: "",
+			calendarName: hasCalendar
+				? String(fm["calendar"] ?? fm["cal-calendar"])
+				: "",
 			location: String(fm["cal-location"] ?? ""),
 			description: String(fm["cal-description"] ?? ""),
 			tags: Array.isArray(fm["tags"]) ? fm["tags"].map(String) : [],
