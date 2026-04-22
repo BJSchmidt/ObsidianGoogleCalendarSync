@@ -155,6 +155,20 @@ export default class GoogleCalendarSync extends Plugin {
 			callback: () => this.syncEngine.runForceResync(),
 		});
 
+		this.addCommand({
+			id: 're-sync-current-note',
+			name: 'Re-sync current note from Google Calendar',
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== 'md') return false;
+				const cache = this.app.metadataCache.getFileCache(file);
+				const fm = cache?.frontmatter;
+				if (!fm?.['cal-event-id'] || !fm?.['cal-calendar-id']) return false;
+				if (!checking) this.syncEngine.resyncSingleNote(file);
+				return true;
+			},
+		});
+
 		// Settings tab
 		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
 

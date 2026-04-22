@@ -102,6 +102,17 @@ export class CalendarFetcher {
 		}
 	}
 
+	/** Fetch a single event from Google and map it to a CalendarEventNote.
+	 *  Returns null if the event is cancelled/deleted or malformed. */
+	async fetchSingleEvent(
+		calendarId: string,
+		calendarName: string,
+		eventId: string,
+	): Promise<CalendarEventNote | null> {
+		const response = await this.calendar.events.get({ calendarId, eventId });
+		return this.mapEvent(response.data, calendarId, calendarName);
+	}
+
 	private mapEvent(
 		raw: calendar_v3.Schema$Event,
 		calendarId: string,

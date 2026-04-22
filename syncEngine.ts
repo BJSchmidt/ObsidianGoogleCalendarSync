@@ -23,6 +23,37 @@ export class SyncEngine {
 		return this.isSyncing;
 	}
 
+	/** Re-sync a single note from Google. Reads `cal-event-id` + `cal-calendar-id`
+	 *  from the note's frontmatter, fetches the current Google state, and rewrites
+	 *  the note (forceUpdate bypasses the cal-updated equality check). */
+	async resyncSingleNote(file: import('obsidian').TFile): Promise<'updated' | 'created' | 'skipped' | 'not-synced' | 'deleted'> {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const fm = cache?.frontmatter ?? {};
+		const eventId = fm['cal-event-id'] as string | undefined;
+		const calendarId = fm['cal-calendar-id'] as string | undefined;
+		const calendarName = (fm['calendar'] ?? fm['cal-calendar']) as string | undefined;
+
+		if (!eventId || !calendarId) {
+			new Notice('This note has no linked Google Calendar event (missing cal-event-id or cal-calendar-id).');
+			return 'not-synced';
+		}
+
+		try {
+			const event = await this.api.fetcher.fetchSingleEvent(calendarId, calendarName ?? 'Primary', eventId);
+			if (!event) {
+				new Notice('Could not fetch event — it may have been deleted in Google Calendar.');
+				return 'deleted';
+			}
+			const result = await this.upsertEventNote(event, true);
+			new Notice(`Re-synced "${event.title}".`);
+			return result;
+		} catch (err: any) {
+			const msg = err?.response?.data?.error?.message ?? err?.message ?? String(err);
+			new Notice(`Re-sync failed: ${msg}`);
+			throw err;
+		}
+	}
+
 	async runForceResync(): Promise<SyncResult> {
 		// Clear all per-calendar sync tokens to force a full time-window fetch
 		const settings = this.getSettings();
