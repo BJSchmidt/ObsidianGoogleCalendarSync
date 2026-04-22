@@ -115,23 +115,31 @@ export class CalendarFetcher {
 
 		const isAllDay = !raw.start?.dateTime;
 
-		// Resolve the event's timezone first so time/date extraction is correct
-		const timezone = raw.start?.timeZone
+		// The event's source timezone (e.g. "America/Denver", "UTC") — informational
+		// only. Some events (appointment-link integrations, externally-scheduled
+		// meetings) come back with timeZone: "UTC" even though they render in the
+		// user's local zone in Google Calendar.
+		const sourceTimezone = raw.start?.timeZone
 			?? raw.end?.timeZone
 			?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Determine the canonical date string (YYYY-MM-DD) in the event's timezone
-		const dateStr = raw.start?.date
-			?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, timezone) : '')!;
+		// Display timezone — always the user's local zone so date/startTime/endTime
+		// in the note match what Google Calendar shows them on screen.
+		const displayTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Extract wall-clock times in the event's timezone (handles UTC "Z" responses)
+		// Determine the canonical date string (YYYY-MM-DD) in the display timezone
+		const dateStr = raw.start?.date
+			?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, displayTimezone) : '')!;
+
+		// Extract wall-clock times in the user's local timezone (handles UTC "Z"
+		// responses and events stored against any other IANA zone).
 		let startTimeStr: string | null = null;
 		let endTimeStr: string | null = null;
 		if (!isAllDay && raw.start?.dateTime) {
-			startTimeStr = wallClockTime(raw.start.dateTime, timezone);
+			startTimeStr = wallClockTime(raw.start.dateTime, displayTimezone);
 		}
 		if (!isAllDay && raw.end?.dateTime) {
-			endTimeStr = wallClockTime(raw.end.dateTime, timezone);
+			endTimeStr = wallClockTime(raw.end.dateTime, displayTimezone);
 		}
 
 		// For multi-day all-day events, compute inclusive end date
@@ -192,7 +200,7 @@ export class CalendarFetcher {
 			videoLink,
 			eventLink: raw.htmlLink || '',
 			isRecurring: !!(raw.recurringEventId || raw.recurrence?.length),
-			timezone,
+			timezone: sourceTimezone,
 			created: raw.created || new Date().toISOString(),
 			updated: raw.updated || new Date().toISOString(),
 		};

@@ -81,7 +81,10 @@ function fmTime(val: unknown): string | null {
 // Convert a raw Google Calendar API event to snapshot-comparable fields
 function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<FrontmatterSnapshot> {
 	const isAllDay = !raw.start?.dateTime;
-	const timezone = raw.start?.timeZone ?? raw.end?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+	// Convert times to the user's local zone so the snapshot matches what
+	// calendarFetcher writes into the note (local wall-clock, regardless of
+	// the event's source timezone like "UTC").
+	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const dateStr = raw.start?.date
 		?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, timezone) : '');
 	let startTimeStr: string | null = null;
@@ -301,7 +304,10 @@ export class TwoWaySyncHandler {
 		}
 
 		const calendarId: string = (fm['cal-calendar-id'] as string) || this.getSettings().defaultCalendarId;
-		const timezone = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+		// startTime/endTime in the note are stored as LOCAL wall-clock (calendarFetcher
+		// converts to the user's local zone on fetch), so push with the local zone —
+		// even if the source event was created against a different zone like UTC.
+		const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 		// Field-level merge: if Google also changed since our snapshot, fetch the
 		// current Google state and merge non-overlapping changes.
