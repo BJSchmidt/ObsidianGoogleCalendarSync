@@ -198,7 +198,8 @@ export class SyncEngine {
 
 		if (!existingFile) {
 			const body = await this.templateEngine.renderBody(event, this.getSettings().templatePath);
-			await this.noteManager.createEventNote(event, body);
+			const file = await this.noteManager.createEventNote(event, body);
+			console.log(`[google-calendar-sync] created: ${file.path} (event: "${event.title}", ${event.date})`);
 			this.onNoteUpserted?.(event.eventId, this.noteManager.buildSnapshot(event));
 			return 'created';
 		}
@@ -216,7 +217,8 @@ export class SyncEngine {
 			return 'skipped';
 		}
 
-		await this.noteManager.updateEventNote(existingFile, event);
+		const updatedFile = await this.noteManager.updateEventNote(existingFile, event);
+		console.log(`[google-calendar-sync] updated: ${updatedFile.path} (event: "${event.title}", ${event.date})`);
 		this.onNoteUpserted?.(event.eventId, this.noteManager.buildSnapshot(event));
 		return 'updated';
 	}
@@ -226,9 +228,11 @@ export class SyncEngine {
 		if (!file) return;
 
 		if (this.getSettings().deleteNotesForRemovedEvents) {
+			console.log(`[google-calendar-sync] deleted: ${file.path} (event: "${event.title}", ${event.date})`);
 			await this.noteManager.deleteEventNote(file);
 			result.deleted++;
 		} else {
+			console.log(`[google-calendar-sync] cancelled: ${file.path} (event: "${event.title}", ${event.date})`);
 			await this.noteManager.markEventCancelled(file);
 			result.updated++;
 		}
