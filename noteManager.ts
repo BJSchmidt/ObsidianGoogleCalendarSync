@@ -23,8 +23,11 @@ const SYNC_OWNED_KEYS = new Set([
 ]);
 
 export class NoteManager {
-	// In-memory index: eventId -> vault path
+	// In-memory index: eventId -> vault path (primary — oldest file wins on duplicates)
 	private eventIndex = new Map<string, string>();
+	// Populated by buildIndex: eventId -> all paths claiming that eventId
+	// (size > 1 means duplicate notes exist — e.g. created by two devices racing)
+	private duplicateIndex = new Map<string, string[]>();
 
 	// Counter to prevent echo-loop in two-way sync: >0 during vault writes
 	private writeDepth = 0;
@@ -40,14 +43,41 @@ export class NoteManager {
 
 	async buildIndex(): Promise<void> {
 		this.eventIndex.clear();
+		this.duplicateIndex.clear();
+
+		// First pass — collect every path per eventId
+		const allPaths = new Map<string, TFile[]>();
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			// Fall back to legacy "event-id" so existing notes are found during migration
 			const eventId = cache?.frontmatter?.['cal-event-id'] ?? cache?.frontmatter?.['gcal-event-id'];
 			if (eventId && typeof eventId === 'string' && eventId.trim()) {
-				this.eventIndex.set(eventId, file.path);
+				const list = allPaths.get(eventId) ?? [];
+				list.push(file);
+				allPaths.set(eventId, list);
 			}
 		}
+
+		// Second pass — pick the oldest file as the primary, record any duplicates
+		for (const [eventId, files] of allPaths.entries()) {
+			if (files.length === 1) {
+				this.eventIndex.set(eventId, files[0].path);
+				continue;
+			}
+			// Sort by ctime (file creation) ascending — oldest wins
+			const sorted = files.sort((a, b) => (a.stat.ctime ?? 0) - (b.stat.ctime ?? 0));
+			this.eventIndex.set(eventId, sorted[0].path);
+			this.duplicateIndex.set(eventId, sorted.map(f => f.path));
+			console.warn(
+				`[google-calendar-sync] duplicate event-id detected: ${eventId}\n  primary: ${sorted[0].path}\n  extras:  ${sorted.slice(1).map(f => f.path).join(', ')}`
+			);
+		}
+	}
+
+	/** Return all eventIds that have more than one note claiming them, with the
+	 *  list of conflicting paths (oldest first). */
+	getDuplicateEventNotes(): Array<{ eventId: string; paths: string[] }> {
+		return Array.from(this.duplicateIndex.entries()).map(([eventId, paths]) => ({ eventId, paths }));
 	}
 
 	findNoteByEventId(eventId: string): TFile | null {

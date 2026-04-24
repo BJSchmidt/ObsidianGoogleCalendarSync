@@ -220,3 +220,18 @@ ln -sf "$(pwd)/styles.css"    "$PLUGIN_DIR/styles.css"
 **Two-way sync not working** — The plugin needs `calendar.events` write scope. If you authorized with an older version, click Re-authorize in settings.
 
 **Table view header broken after using calendar view** — Update to the latest version; this was fixed by removing the `cal-view-container` class on view unload.
+
+---
+
+## Multi-Device Setup
+
+The plugin is **desktop-only**, but many users sync their vault across several machines via Obsidian Sync / iCloud / Syncthing. **Only one machine should have this plugin actively syncing at a time** — running two desktops in parallel can produce duplicate event notes and racing writes to Google Calendar.
+
+The plugin enforces this with a **per-device opt-in**:
+
+- Each machine has its own **Enable sync on this device** toggle (Settings → Google Calendar Sync). This setting is stored in the browser's `localStorage`, so it stays local and doesn't travel with the vault.
+- New installs default to **off**. The very first machine that connects and authenticates auto-opts-in.
+- Every successful sync stamps the vault with the current device's ID and name. If another device loads the plugin and sees a recent sync from a different device, it shows a warning so you can pick which one should be the syncer.
+- **Mobile/iPad** won't run the plugin (it requires Obsidian Bases, desktop-only), so it's safe to have your vault sync to mobile without worrying about interference.
+
+If you do end up with duplicate event notes from a past race, run the **Find duplicate event notes** command (logs them to the console) or **Clean duplicate event notes** (trashes the newer copies, keeps the oldest for each event).

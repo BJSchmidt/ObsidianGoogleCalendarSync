@@ -3,6 +3,7 @@ import { GoogleCalendarAPI } from './googleCalendarAPI';
 import { NoteManager } from './noteManager';
 import { TemplateEngine } from './templateEngine';
 import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings, SyncResult } from './types';
+import { getDeviceId, getDeviceName, isSyncEnabledOnDevice } from './deviceOwnership';
 
 export class SyncEngine {
 	private isSyncing = false;
@@ -69,6 +70,10 @@ export class SyncEngine {
 		}
 
 		const settings = this.getSettings();
+		if (!isSyncEnabledOnDevice()) {
+			new Notice('Google Calendar sync is disabled on this device. Enable it in plugin settings if you want this machine to sync.');
+			return { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] };
+		}
 		if (!settings.googleAccessToken) {
 			new Notice('Google Calendar: not authorized. Please authorize in plugin settings.');
 			return { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] };
@@ -115,7 +120,13 @@ export class SyncEngine {
 				}
 			}
 
-			settings.lastSyncTime = new Date().toISOString();
+			const nowIso = new Date().toISOString();
+			settings.lastSyncTime = nowIso;
+			// Stamp device ownership so other devices using this vault can detect
+			// that we're the active syncer.
+			settings.lastSyncDeviceId = getDeviceId();
+			settings.lastSyncDeviceName = getDeviceName();
+			settings.lastSyncAt = nowIso;
 			await this.saveSettings();
 
 			const summary = [

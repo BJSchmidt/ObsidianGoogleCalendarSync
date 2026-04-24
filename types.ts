@@ -23,6 +23,13 @@ export interface GoogleCalendarSyncSettings {
 	cachedCalendars: GoogleCalendarListEntry[];
 	calendarBasePath: string;
 	showCalendarRibbonButton: boolean;
+	// Single-device ownership. `syncEnabledOnDevice` lives in localStorage (not
+	// here) because it must NOT propagate via Obsidian Sync — each device opts
+	// in independently. These two fields DO propagate and are used to warn
+	// when another device is actively syncing the same vault.
+	lastSyncDeviceId: string;
+	lastSyncDeviceName: string;
+	lastSyncAt: string; // ISO timestamp of the most recent sync run
 }
 
 export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
@@ -50,6 +57,9 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	cachedCalendars: [],
 	calendarBasePath: '',
 	showCalendarRibbonButton: false,
+	lastSyncDeviceId: '',
+	lastSyncDeviceName: '',
+	lastSyncAt: '',
 };
 
 export interface CalendarEventNote {

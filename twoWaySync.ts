@@ -3,6 +3,7 @@ import { calendar_v3 } from 'googleapis';
 import { GoogleCalendarAPI } from './googleCalendarAPI';
 import { NoteManager } from './noteManager';
 import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } from './types';
+import { isSyncEnabledOnDevice } from './deviceOwnership';
 
 // Frontmatter fields that, when changed, trigger a push to Google Calendar
 const WATCHED_FIELDS: (keyof FrontmatterSnapshot)[] = [
@@ -180,6 +181,7 @@ export class TwoWaySyncHandler {
 	// This catches events created before the plugin loaded or notes that the user
 	// has manually tagged as calendar events.
 	async scanForUnsyncedFiles(): Promise<void> {
+		if (!isSyncEnabledOnDevice()) return;
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (this.destroyed) return;
 
@@ -198,6 +200,7 @@ export class TwoWaySyncHandler {
 	// Entry point for vault 'modify' events
 	handleFileModify(file: TFile): void {
 		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return;
 		if (!this.isCalendarRelevant(file)) return;
 
@@ -207,6 +210,7 @@ export class TwoWaySyncHandler {
 	// Entry point for vault 'delete' events — push deletion to Google if configured
 	handleFileDelete(file: TFile, frontmatter: Record<string, unknown>): void {
 		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return;
 
 		const behavior = this.getSettings().onNoteDeleteBehavior;

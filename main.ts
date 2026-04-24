@@ -13,6 +13,15 @@ import {
 	getViewOptions, loadTuiCss, unloadTuiCss,
 } from './basesCalendarView';
 import { DEFAULT_SETTINGS, GoogleCalendarSyncSettings, NewEventFormData } from './types';
+import {
+	getDeviceId,
+	getDeviceName,
+	isSyncEnabledOnDevice,
+	isSyncEnabledOnDeviceUnset,
+	setSyncEnabledOnDevice,
+	detectOtherActiveDevice,
+	formatAge,
+} from './deviceOwnership';
 
 export default class GoogleCalendarSync extends Plugin {
 	settings: GoogleCalendarSyncSettings;
@@ -24,6 +33,22 @@ export default class GoogleCalendarSync extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		// Device-sync migration. On a new install the per-device flag defaults
+		// to OFF to avoid two machines silently racing. But for an existing
+		// user upgrading the plugin, the first machine to load should stay
+		// enabled — assume the authenticated machine has been the syncer
+		// all along, OR take over if no other device has ever stamped its id.
+		if (isSyncEnabledOnDeviceUnset()) {
+			const hasAuth = !!this.settings.googleAccessToken;
+			const noPriorOwner = !this.settings.lastSyncDeviceId;
+			const weAreTheOwner = this.settings.lastSyncDeviceId === getDeviceId();
+			if (hasAuth && (noPriorOwner || weAreTheOwner)) {
+				setSyncEnabledOnDevice(true);
+			} else {
+				setSyncEnabledOnDevice(false);
+			}
+		}
 
 		this.api = new GoogleCalendarAPI(
 			this.buildCredentials(),
@@ -67,13 +92,25 @@ export default class GoogleCalendarSync extends Plugin {
 
 			await this.provisionDefaultTemplate();
 
+			// Ensure the event-id index is built (with duplicate detection) before
+			// two-way sync initializes snapshots. buildIndex runs again inside
+			// runSync, but doing it once now so the warning appears even when the
+			// user has sync disabled on this device.
+			await this.noteManager.buildIndex();
+			this.warnAboutDuplicatesIfAny();
+			this.warnAboutOtherDeviceIfAny();
+
 			try {
 				await this.twoWaySync.initialize();
 			} catch (err) {
 				console.error('GoogleCalendarSync: initialize failed:', err);
 			}
 
-			if (this.settings.googleAccessToken && this.settings.enabledCalendars.length > 0) {
+			if (
+				this.settings.googleAccessToken &&
+				this.settings.enabledCalendars.length > 0 &&
+				isSyncEnabledOnDevice()
+			) {
 				try {
 					await this.syncEngine.runSync();
 				} catch (err) {
@@ -169,6 +206,18 @@ export default class GoogleCalendarSync extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: 'find-duplicate-event-notes',
+			name: 'Find duplicate event notes',
+			callback: () => this.reportDuplicateEventNotes(),
+		});
+
+		this.addCommand({
+			id: 'clean-duplicate-event-notes',
+			name: 'Clean duplicate event notes (trash extras, keep oldest)',
+			callback: () => this.cleanDuplicateEventNotes(),
+		});
+
 		// Settings tab
 		this.addSettingTab(new GoogleCalendarSyncSettingTab(this.app, this));
 
@@ -252,10 +301,95 @@ export default class GoogleCalendarSync extends Plugin {
 			})
 		);
 
-		// Auto-sync
-		if (this.settings.autoSyncInterval > 0) {
+		// Auto-sync — only if the user has opted this device in
+		if (this.settings.autoSyncInterval > 0 && isSyncEnabledOnDevice()) {
 			this.syncEngine.startAutoSync();
 		}
+	}
+
+	private warnAboutOtherDeviceIfAny(): void {
+		const warning = detectOtherActiveDevice(
+			this.settings.lastSyncDeviceId,
+			this.settings.lastSyncDeviceName,
+			this.settings.lastSyncAt,
+		);
+		if (!warning) return;
+
+		const thisDevice = getDeviceName();
+		const thisEnabled = isSyncEnabledOnDevice();
+		const age = formatAge(warning.ageMs);
+
+		if (thisEnabled) {
+			// Both devices have sync on — loud warning, high risk of duplicates.
+			const msg = `Google Calendar Sync: "${warning.deviceName}" also synced this vault ${age}. Two devices syncing simultaneously can create duplicate notes and overwrite each other. Disable sync on one device in Settings → Google Calendar Sync.`;
+			new Notice(msg, 15000);
+			console.warn(`[google-calendar-sync] ${msg} (this device: ${thisDevice}, other device: ${warning.deviceId})`);
+		} else {
+			// Only the other device is syncing — informational log, no modal.
+			console.log(`[google-calendar-sync] sync is owned by "${warning.deviceName}" (last synced ${age}). This device ("${thisDevice}") is a read-only viewer.`);
+		}
+	}
+
+	private warnAboutDuplicatesIfAny(): void {
+		const dupes = this.noteManager.getDuplicateEventNotes();
+		if (dupes.length === 0) return;
+		const example = dupes[0];
+		new Notice(
+			`Google Calendar Sync: found ${dupes.length} event(s) with duplicate notes (e.g. ${example.paths.length} copies of ${example.eventId.slice(-8)}). Run the "Find duplicate event notes" command to review.`,
+			12000,
+		);
+	}
+
+	private reportDuplicateEventNotes(): void {
+		const dupes = this.noteManager.getDuplicateEventNotes();
+		if (dupes.length === 0) {
+			new Notice('No duplicate event notes found.');
+			return;
+		}
+		console.group(`[google-calendar-sync] ${dupes.length} duplicate event-id(s):`);
+		for (const { eventId, paths } of dupes) {
+			console.log(`${eventId}`);
+			for (let i = 0; i < paths.length; i++) {
+				console.log(`  ${i === 0 ? 'KEEP' : 'EXTRA'}: ${paths[i]}`);
+			}
+		}
+		console.groupEnd();
+		new Notice(
+			`Found ${dupes.length} event(s) with duplicate notes. See console (Ctrl/Cmd+Shift+I) for the list. Run "Clean duplicate event notes" to trash the extras.`,
+			10000,
+		);
+	}
+
+	private async cleanDuplicateEventNotes(): Promise<void> {
+		await this.noteManager.buildIndex();
+		const dupes = this.noteManager.getDuplicateEventNotes();
+		if (dupes.length === 0) {
+			new Notice('No duplicate event notes found.');
+			return;
+		}
+		let trashed = 0;
+		let failed = 0;
+		for (const { paths } of dupes) {
+			// paths[0] is the oldest — the "winner". Trash the rest.
+			for (const extra of paths.slice(1)) {
+				const file = this.app.vault.getAbstractFileByPath(extra);
+				if (!(file instanceof TFile)) continue;
+				try {
+					await this.app.fileManager.trashFile(file);
+					console.log(`[google-calendar-sync] trashed duplicate: ${extra}`);
+					trashed++;
+				} catch (err) {
+					console.error(`[google-calendar-sync] failed to trash ${extra}:`, err);
+					failed++;
+				}
+			}
+		}
+		// Rebuild so the in-memory index matches the new vault state
+		await this.noteManager.buildIndex();
+		new Notice(
+			`Cleaned ${trashed} duplicate note(s)${failed ? `, ${failed} failed (check console)` : ''}. Kept the oldest note for each event.`,
+			8000,
+		);
 	}
 
 	onunload() {

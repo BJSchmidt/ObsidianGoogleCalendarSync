@@ -1,6 +1,14 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { GoogleCalendarListEntry } from './types';
 import type GoogleCalendarSync from './main';
+import {
+	getDeviceId,
+	getDeviceName,
+	isSyncEnabledOnDevice,
+	setDeviceName,
+	setSyncEnabledOnDevice,
+	formatAge,
+} from './deviceOwnership';
 
 export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 	plugin: GoogleCalendarSync;
@@ -63,6 +71,46 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 				cls: 'setting-item-description',
 			});
 		}
+
+		// ── Device ownership ─────────────────────────────────────────────────
+		// Single-device-sync model. Each machine must opt in explicitly, and
+		// we show who last synced so two machines racing is visible.
+		const lastSyncDeviceId = this.plugin.settings.lastSyncDeviceId;
+		const lastSyncDeviceName = this.plugin.settings.lastSyncDeviceName || 'another device';
+		const lastSyncAt = this.plugin.settings.lastSyncAt;
+		const thisDeviceId = getDeviceId();
+		const thisIsOwner = lastSyncDeviceId === thisDeviceId;
+		const ownerDesc = !lastSyncDeviceId
+			? 'No device has synced this vault yet.'
+			: thisIsOwner
+				? `This device last synced ${lastSyncAt ? formatAge(Date.now() - new Date(lastSyncAt).getTime()) : ''}.`
+				: `Last synced by "${lastSyncDeviceName}" ${lastSyncAt ? formatAge(Date.now() - new Date(lastSyncAt).getTime()) : ''}. Enabling sync here while another device is active can cause duplicate notes.`;
+
+		new Setting(containerEl)
+			.setName('Enable sync on this device')
+			.setDesc(ownerDesc)
+			.addToggle(toggle => toggle
+				.setValue(isSyncEnabledOnDevice())
+				.onChange(value => {
+					setSyncEnabledOnDevice(value);
+					// Start or stop the auto-sync timer to match the new state
+					if (value && this.plugin.settings.autoSyncInterval > 0) {
+						this.plugin.syncEngine.startAutoSync();
+					} else {
+						this.plugin.syncEngine.stopAutoSync();
+					}
+					this.display();
+				}));
+
+		new Setting(containerEl)
+			.setName('This device name')
+			.setDesc('Shown to other machines that open this vault, so you can tell which one is syncing.')
+			.addText(text => text
+				.setPlaceholder('Mac, Home PC, Work laptop…')
+				.setValue(getDeviceName())
+				.onChange(value => {
+					setDeviceName(value.trim() || 'This device');
+				}));
 
 		// ── Status (top, no heading per Obsidian guidelines) ─────────────────
 		const lastSync = this.plugin.settings.lastSyncTime
