@@ -309,12 +309,17 @@ export class TwoWaySyncHandler {
 		// even if the source event was created against a different zone like UTC.
 		const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Field-level merge: if Google also changed since our snapshot, fetch the
-		// current Google state and merge non-overlapping changes.
+		// Field-level merge: always fetch Google's current state and compare against
+		// our snapshot. Catches the case where Google was updated externally (e.g.
+		// an attendee accepted a proposed time in Gmail) between our last sync
+		// and this local edit — otherwise the stale local time would overwrite
+		// the change in Google.
 		let merged = current;
-		if (current.updated && snapshot.updated && current.updated < snapshot.updated) {
-			try {
-				const googleRaw = await this.api.getEvent(calendarId, eventId);
+		try {
+			const googleRaw = await this.api.getEvent(calendarId, eventId);
+			const googleUpdated = googleRaw.updated ?? '';
+			const googleIsNewer = !!(googleUpdated && snapshot.updated && googleUpdated > snapshot.updated);
+			if (googleIsNewer) {
 				const googleState = googleEventToSnapshot(googleRaw);
 
 				// Determine which fields Google changed (vs our snapshot)
@@ -349,11 +354,12 @@ export class TwoWaySyncHandler {
 					this.updateSnapshot(eventId, { ...merged, updated: googleRaw.updated ?? snapshot.updated });
 					return;
 				}
-			} catch (err) {
-				// Can't fetch Google state — fall back to discarding local change
-				this.notify(`Sync conflict on "${fm['title']}": couldn't fetch Google version. Local change discarded.`);
-				return;
 			}
+		} catch (err) {
+			// Can't fetch Google state — skip this push to avoid overwriting
+			// potentially newer remote data with stale local state.
+			this.notify(`Sync check failed for "${fm['title']}": couldn't fetch Google version. Local change not pushed.`);
+			return;
 		}
 
 		const patch = this.buildPatch(merged, fm, timezone);
