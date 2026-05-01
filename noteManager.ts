@@ -405,24 +405,51 @@ export class NoteManager {
 		return content;
 	}
 
-	/** Repeatedly strip leading "---\n...---\n" blocks from a body. Past versions
-	 *  of the plugin (or interactions with other tools that re-serialize the YAML)
-	 *  could leave duplicated frontmatter sandwiched in the body. We scrape any
-	 *  such blocks here so the next write produces a clean note. */
+	/** Strip embedded "---" blocks left in a body by past corruption.
+	 *
+	 *  The bug pattern looks like:
+	 *      <body content>
+	 *      cal-attendees:
+	 *      cal-organizer: ...
+	 *      cal-updated: ...
+	 *      ---
+	 *      <body content again>
+	 *      cal-attendees: ...
+	 *      ---
+	 *      # Real heading
+	 *
+	 *  We scan for "---" delimiter lines whose preceding block contains a
+	 *  sync-owned frontmatter key ("cal-attendees:", "cal-event-id:", etc.).
+	 *  Everything up to and including the *last* such delimiter is discarded
+	 *  — the real body is whatever follows. A "---" preceded only by
+	 *  ordinary prose is left alone (legitimate Markdown horizontal rule). */
 	private stripEmbeddedFrontmatterBlocks(body: string): string {
-		let out = body;
-		let removed = 0;
-		while (true) {
-			const match = out.match(/^[\s ]*---\s*\n([\s\S]*?)\n---\s*\n?/);
-			if (!match) break;
-			out = out.slice(match[0].length);
-			removed++;
-			if (removed > 10) break; // safety
+		const lines = body.split('\n');
+		const keyPattern = /^(cal-[a-z-]+|calendar|date|title|startTime|endTime|endDate|allDay)\s*:/;
+
+		let lastBadDelimiterIdx = -1;
+		let runStart = 0;
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].trim() !== '---') continue;
+			let sawSyncKey = false;
+			for (let j = runStart; j < i; j++) {
+				if (keyPattern.test(lines[j].trim())) {
+					sawSyncKey = true;
+					break;
+				}
+			}
+			if (sawSyncKey) lastBadDelimiterIdx = i;
+			runStart = i + 1;
 		}
-		if (removed > 0) {
-			console.warn(`[google-calendar-sync] stripped ${removed} embedded frontmatter block(s) from note body`);
-		}
-		return out;
+
+		if (lastBadDelimiterIdx < 0) return body;
+
+		const cleaned = lines.slice(lastBadDelimiterIdx + 1).join('\n').replace(/^\n+/, '');
+		const removedBytes = body.length - cleaned.length;
+		console.warn(
+			`[google-calendar-sync] stripped ${removedBytes} byte(s) of embedded frontmatter from note body (last bad delimiter at body line ${lastBadDelimiterIdx + 1})`,
+		);
+		return cleaned;
 	}
 
 	// Parse YAML frontmatter block into a plain object
