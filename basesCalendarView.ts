@@ -582,40 +582,57 @@ abstract class BaseTuiCalendarView extends BasesView {
 		const file = this.fileMap.get(eventId);
 		if (!file) return;
 
+		// Use the plugin's noteManager (yaml-lib based) rather than Obsidian's
+		// processFrontMatter — the latter has been observed to mangle notes
+		// whose frontmatter contains multiline scalars (e.g. cal-description
+		// with embedded text), occasionally leaking frontmatter content into
+		// the body on subsequent writes.
 		try {
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				if (changes.start) {
-					const start = new Date(changes.start as any);
-					fm["date"] = start.toISOString().slice(0, 10);
-					if (!changes.isAllday && !fm["allDay"]) {
-						fm["startTime"] = `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`;
-					}
+			const plugin = (this.app as any).plugins?.plugins?.["google-calendar-sync"];
+			const noteManager = plugin?.noteManager;
+			if (!noteManager) throw new Error("noteManager not available");
+
+			const content = await this.app.vault.read(file);
+			const fm = noteManager.parseFrontmatter(content) as Record<string, unknown>;
+			const body = noteManager.extractBody(content);
+
+			if (changes.start) {
+				const start = new Date(changes.start as any);
+				fm["date"] = start.toISOString().slice(0, 10);
+				if (!changes.isAllday && !fm["allDay"]) {
+					fm["startTime"] = `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`;
 				}
-				if (changes.end) {
-					const end = new Date(changes.end as any);
-					const isAllday = changes.isAllday ?? Boolean(fm["allDay"]);
-					if (isAllday) {
-						// TUI Calendar reports exclusive end for all-day events; store inclusive.
-						// Clear endDate if it equals the start date (single-day event).
-						const exclusiveEndStr = end.toISOString().slice(0, 10);
-						const inclusiveEndStr = subOneDay(exclusiveEndStr);
-						fm["endDate"] = inclusiveEndStr !== fm["date"] ? inclusiveEndStr : null;
-					} else {
-						fm["endDate"] = end.toISOString().slice(0, 10);
-						fm["endTime"] = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
-					}
+			}
+			if (changes.end) {
+				const end = new Date(changes.end as any);
+				const isAllday = changes.isAllday ?? Boolean(fm["allDay"]);
+				if (isAllday) {
+					const exclusiveEndStr = end.toISOString().slice(0, 10);
+					const inclusiveEndStr = subOneDay(exclusiveEndStr);
+					fm["endDate"] = inclusiveEndStr !== fm["date"] ? inclusiveEndStr : null;
+				} else {
+					fm["endDate"] = end.toISOString().slice(0, 10);
+					fm["endTime"] = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
 				}
-				if (changes.isAllday !== undefined) {
-					fm["allDay"] = changes.isAllday;
-					if (changes.isAllday) {
-						delete fm["startTime"];
-						delete fm["endTime"];
-					}
+			}
+			if (changes.isAllday !== undefined) {
+				fm["allDay"] = changes.isAllday;
+				if (changes.isAllday) {
+					delete fm["startTime"];
+					delete fm["endTime"];
 				}
-				if (changes.title !== undefined) {
-					fm["title"] = changes.title;
-				}
-			});
+			}
+			if (changes.title !== undefined) {
+				fm["title"] = changes.title;
+			}
+
+			const newContent = noteManager.buildNoteContent(fm, body);
+			noteManager.beginWrite();
+			try {
+				await this.app.vault.modify(file, newContent);
+			} finally {
+				noteManager.endWrite();
+			}
 		} catch (err) {
 			console.error("[cal-view] Failed to persist event update:", err);
 		}

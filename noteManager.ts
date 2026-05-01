@@ -398,10 +398,31 @@ export class NoteManager {
 			if (lines[i].trim() === '---') {
 				// Return everything after this line, stripping leading blank lines
 				const rest = lines.slice(i + 1).join('\n');
-				return rest.replace(/^\n+/, '');
+				const stripped = rest.replace(/^\n+/, '');
+				return this.stripEmbeddedFrontmatterBlocks(stripped);
 			}
 		}
 		return content;
+	}
+
+	/** Repeatedly strip leading "---\n...---\n" blocks from a body. Past versions
+	 *  of the plugin (or interactions with other tools that re-serialize the YAML)
+	 *  could leave duplicated frontmatter sandwiched in the body. We scrape any
+	 *  such blocks here so the next write produces a clean note. */
+	private stripEmbeddedFrontmatterBlocks(body: string): string {
+		let out = body;
+		let removed = 0;
+		while (true) {
+			const match = out.match(/^[\s ]*---\s*\n([\s\S]*?)\n---\s*\n?/);
+			if (!match) break;
+			out = out.slice(match[0].length);
+			removed++;
+			if (removed > 10) break; // safety
+		}
+		if (removed > 0) {
+			console.warn(`[google-calendar-sync] stripped ${removed} embedded frontmatter block(s) from note body`);
+		}
+		return out;
 	}
 
 	// Parse YAML frontmatter block into a plain object
