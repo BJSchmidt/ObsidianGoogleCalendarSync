@@ -202,8 +202,13 @@ export class TwoWaySyncHandler {
 		if (!this.syncReady) return;
 		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return;
-		if (!this.isCalendarRelevant(file)) return;
+		if (file.extension !== 'md') return;
 
+		// Don't gate on metadataCache here — when the calendar field was just
+		// added by the Add-to-Calendar modal the cache is still stale and would
+		// report the file as non-calendar. processModification reads the actual
+		// file content and bails out cheaply if the frontmatter has nothing
+		// calendar-related, so always queueing is safe.
 		this.debounce(file.path, () => this.processModification(file));
 	}
 
