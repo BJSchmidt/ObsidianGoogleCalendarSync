@@ -124,7 +124,6 @@ export class TwoWaySyncHandler {
 	private snapshots = new Map<string, FrontmatterSnapshot>();
 	// file path -> debounce timer handle
 	private debounceTimers = new Map<string, number>();
-	private readonly DEBOUNCE_MS = 4000;
 	// Set true after the first G→O sync completes; O→G watching is blocked until then
 	private syncReady = false;
 	// Set true in destroy() to abort any async work that is still mid-flight
@@ -618,10 +617,14 @@ export class TwoWaySyncHandler {
 	private debounce(key: string, fn: () => void): void {
 		const existing = this.debounceTimers.get(key);
 		if (existing !== undefined) window.clearTimeout(existing);
+		const seconds = this.getSettings().twoWaySyncDebounceSeconds;
+		// Clamp to sensible range — too short causes spammy half-edit pushes,
+		// too long delays the round-trip past usefulness.
+		const ms = Math.max(2, Math.min(120, Number.isFinite(seconds) ? seconds : 15)) * 1000;
 		const handle = window.setTimeout(() => {
 			this.debounceTimers.delete(key);
 			fn();
-		}, this.DEBOUNCE_MS);
+		}, ms);
 		this.debounceTimers.set(key, handle);
 	}
 

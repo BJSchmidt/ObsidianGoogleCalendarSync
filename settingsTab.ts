@@ -245,6 +245,20 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 					this.plugin.syncEngine.restartAutoSync();
 				}));
 
+		new Setting(containerEl)
+			.setName('Push-to-Google debounce')
+			.setDesc('Seconds to wait after the last edit to a note before pushing the change to Google. Longer values batch active editing sessions into one push. Clamped to 2–120 seconds.')
+			.addText(text => text
+				.setPlaceholder('15')
+				.setValue(String(this.plugin.settings.twoWaySyncDebounceSeconds ?? 15))
+				.onChange((value) => {
+					const n = parseInt(value, 10);
+					if (Number.isFinite(n)) {
+						this.plugin.settings.twoWaySyncDebounceSeconds = Math.max(2, Math.min(120, n));
+						this.debouncedSave();
+					}
+				}));
+
 		// ── Calendar Selection ───────────────────────────────────────────────
 		new Setting(containerEl).setName('Calendars to Sync').setHeading();
 

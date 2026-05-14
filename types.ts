@@ -30,6 +30,9 @@ export interface GoogleCalendarSyncSettings {
 	lastSyncDeviceId: string;
 	lastSyncDeviceName: string;
 	lastSyncAt: string; // ISO timestamp of the most recent sync run
+	// Seconds to wait after the last edit to a note before pushing the change
+	// to Google. Longer values batch active editing sessions into one push.
+	twoWaySyncDebounceSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
@@ -60,6 +63,7 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	lastSyncDeviceId: '',
 	lastSyncDeviceName: '',
 	lastSyncAt: '',
+	twoWaySyncDebounceSeconds: 15,
 };
 
 export interface CalendarEventNote {
