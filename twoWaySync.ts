@@ -251,6 +251,60 @@ export class TwoWaySyncHandler {
 		}
 	}
 
+	// Entry point for vault 'rename' events.
+	//
+	// Obsidian does not rewrite frontmatter on a rename, so a note whose `title`
+	// was mirroring its filename (the common case for ticket/task notes added
+	// through "Add to Calendar") kept the stale title and Google never saw the
+	// new name. When the old title matched the old filename we treat the rename
+	// as a title change and push it. When the user had deliberately set a
+	// different title, we leave it alone.
+	handleFileRename(file: TFile, oldPath: string): void {
+		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
+		if (this.noteManager.isWriting) return; // the plugin's own renameIfNeeded
+		if (file.extension !== 'md') return;
+
+		const oldBasename = oldPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+		// A pure folder move leaves the basename alone — nothing to do.
+		if (!oldBasename || oldBasename === file.basename) return;
+
+		this.debounce(file.path, () => this.processRename(file, oldBasename));
+	}
+
+	private async processRename(file: TFile, oldBasename: string): Promise<void> {
+		if (this.destroyed) return;
+		if (this.getSyncEngineIsSyncing()) return;
+
+		const content = await this.app.vault.read(file);
+		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
+		if (!fm) return;
+		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) return;
+
+		const currentTitle = typeof fm['title'] === 'string' ? fm['title'].trim() : '';
+
+		// The title is the user's own wording, not a mirror of the filename.
+		// Renaming the file must not clobber it.
+		if (currentTitle && currentTitle !== oldBasename) return;
+		if (currentTitle === file.basename) return; // already matches
+
+		fm['title'] = file.basename;
+		const body = this.noteManager.extractBody(content);
+		const newContent = this.noteManager.buildNoteContent(fm, body);
+
+		this.noteManager.beginWrite();
+		try {
+			await this.app.vault.modify(file, newContent);
+		} finally {
+			this.noteManager.endWrite();
+		}
+
+		console.log(`[google-calendar-sync] renamed: ${file.path} — title "${oldBasename}" → "${file.basename}"`);
+
+		// Our own write was suppressed above, so push the new title explicitly.
+		await this.processModification(file);
+	}
+
 	// Entry point for vault 'create' events (user-created notes without event-id)
 	handleFileCreate(file: TFile): void {
 		if (!this.syncReady) return;

@@ -292,11 +292,13 @@ export default class GoogleCalendarSync extends Plugin {
 			})
 		);
 
-		// Keep event index in sync when files are renamed/moved
+		// Keep event index in sync when files are renamed/moved, and follow a
+		// filename change through to the note's title (and on to Google).
 		this.registerEvent(
 			this.app.vault.on('rename', (file, oldPath) => {
 				if (file instanceof TFile && file.extension === 'md') {
 					this.noteManager.updateIndexPath(oldPath, file.path);
+					this.twoWaySync.handleFileRename(file, oldPath);
 				}
 			})
 		);
