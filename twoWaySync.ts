@@ -302,11 +302,18 @@ export class TwoWaySyncHandler {
 		const currentTitle = typeof fm['title'] === 'string' ? fm['title'].trim() : '';
 		if (currentTitle === live.basename) return; // already matches
 
-		// The title is the user's own wording, not a mirror of the filename.
-		// Renaming the file must not clobber it.
-		if (currentTitle && currentTitle !== oldBasename) {
+		// Notes inside the sync folder are plugin-managed: their filename is
+		// derived from Google's title, and can carry a date or event-id suffix
+		// when two events collide. Letting the filename drive the title there
+		// would write those suffixes into the event name, so only follow a
+		// rename when the title really was mirroring the old filename.
+		//
+		// Everywhere else — ticket notes, task notes, anything the user names
+		// themselves — the filename IS the name, so a rename is a rename even
+		// if the title had drifted out of step with it.
+		if (this.isInSyncFolder(live) && currentTitle && currentTitle !== oldBasename) {
 			console.log(
-				`[google-calendar-sync] rename ignored: title "${currentTitle}" was not tracking filename "${oldBasename}"`,
+				`[google-calendar-sync] rename ignored for managed note: title "${currentTitle}" was not tracking filename "${oldBasename}"`,
 			);
 			return;
 		}
@@ -316,7 +323,7 @@ export class TwoWaySyncHandler {
 		await this.app.vault.modify(live, this.noteManager.buildNoteContent(fm, body));
 
 		console.log(
-			`[google-calendar-sync] renamed: ${live.path} — title "${oldBasename}" → "${live.basename}" (queued for push)`,
+			`[google-calendar-sync] renamed: ${live.path} — title "${currentTitle}" → "${live.basename}" (queued for push)`,
 		);
 	}
 
