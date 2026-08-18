@@ -4,7 +4,7 @@ import { GoogleCalendarAPI, GoogleCalendarCredentials } from './googleCalendarAP
 import { NoteManager } from './noteManager';
 import { TemplateEngine } from './templateEngine';
 import { SyncEngine } from './syncEngine';
-import { TwoWaySyncHandler } from './twoWaySync';
+import { TwoWaySyncHandler, fmAllDay } from './twoWaySync';
 import { GoogleCalendarSyncSettingTab } from './settingsTab';
 import { CalendarEventModal } from './createEventModal';
 import {
@@ -528,7 +528,7 @@ export default class GoogleCalendarSync extends Plugin {
 			startTime: String(fm['startTime'] ?? ''),
 			endTime: String(fm['endTime'] ?? ''),
 			endDate: String(fm['endDate'] ?? ''),
-			allDay: Boolean(fm['allDay'] ?? false),
+			allDay: fmAllDay(fm),
 			calendarId: String(fm['cal-calendar-id'] ?? settings.defaultCalendarId ?? 'primary'),
 			calendarName: String(fm['calendar'] ?? fm['cal-calendar'] ?? 'Primary'),
 			location: String(fm['cal-location'] ?? ''),

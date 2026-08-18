@@ -13,6 +13,7 @@ import Calendar from "@toast-ui/calendar";
 import type { EventObject, Options } from "@toast-ui/calendar";
 import { CalendarEventModal } from "./createEventModal";
 import type { NewEventFormData, GoogleCalendarListEntry } from "./types";
+import { fmAllDay } from "./twoWaySync";
 
 /** TZDate from TUI Calendar — has getHours/getMinutes like Date */
 interface TZDateLike {
@@ -599,13 +600,13 @@ abstract class BaseTuiCalendarView extends BasesView {
 			if (changes.start) {
 				const start = new Date(changes.start as any);
 				fm["date"] = start.toISOString().slice(0, 10);
-				if (!changes.isAllday && !fm["allDay"]) {
+				if (!changes.isAllday && !fmAllDay(fm)) {
 					fm["startTime"] = `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`;
 				}
 			}
 			if (changes.end) {
 				const end = new Date(changes.end as any);
-				const isAllday = changes.isAllday ?? Boolean(fm["allDay"]);
+				const isAllday = changes.isAllday ?? fmAllDay(fm);
 				if (isAllday) {
 					const exclusiveEndStr = end.toISOString().slice(0, 10);
 					const inclusiveEndStr = subOneDay(exclusiveEndStr);
@@ -702,7 +703,7 @@ abstract class BaseTuiCalendarView extends BasesView {
 			startTime: String(fm["startTime"] ?? ""),
 			endTime: String(fm["endTime"] ?? ""),
 			endDate: dateToYmd(fm["endDate"]),
-			allDay: Boolean(fm["allDay"] ?? false),
+			allDay: fmAllDay(fm),
 			calendarId: hasCalendar
 				? String(fm["cal-calendar-id"] ?? defaultCalendarId ?? "primary")
 				: "",

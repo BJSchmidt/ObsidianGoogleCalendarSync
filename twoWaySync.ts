@@ -120,7 +120,7 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 // else. handleNewEvent has always inferred it this way; everything that
 // compares or validates frontmatter must agree, or the create path and the
 // update path disagree about the same note.
-function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
+export function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
 	if (!fm) return false;
 	if (fm['allDay'] === true || fm['allDay'] === 'true') return true;
 	return !fmTime(fm['startTime']);
@@ -614,7 +614,7 @@ export class TwoWaySyncHandler {
 		// Build the Google event resource
 		const startTime = fmTime(fm['startTime']);
 		const endTime = fmTime(fm['endTime']);
-		const allDay = !startTime;
+		const allDay = fmAllDay(fm);
 
 		const event: calendar_v3.Schema$Event = {
 			summary: title,
