@@ -142,6 +142,17 @@ function addOneDay(dateStr: string): string {
 	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** Local-time YYYY-MM-DD. toISOString() converts to UTC first, which pushes
+ *  evening events onto the following day in negative-offset timezones. */
+function localYmd(d: Date): string {
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Local-time HH:MM. */
+function localHhmm(d: Date): string {
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 /** Subtract one calendar day from a YYYY-MM-DD string. Uses noon to avoid DST edge cases. */
 function subOneDay(dateStr: string): string {
 	const d = new Date(dateStr + "T12:00:00");
@@ -597,31 +608,40 @@ abstract class BaseTuiCalendarView extends BasesView {
 			const fm = noteManager.parseFrontmatter(content) as Record<string, unknown>;
 			const body = noteManager.extractBody(content);
 
+			// The all-day state the event ends up in. TUI only reports isAllday
+			// when the drag crossed between the all-day row and the time grid;
+			// otherwise whatever the note already says still holds. Decide once —
+			// deriving it separately per field is how the two halves of this
+			// handler used to disagree.
+			const isAllday = changes.isAllday ?? fmAllDay(fm);
+
 			if (changes.start) {
 				const start = new Date(changes.start as any);
-				fm["date"] = start.toISOString().slice(0, 10);
-				if (!changes.isAllday && !fmAllDay(fm)) {
-					fm["startTime"] = `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`;
-				}
+				fm["date"] = localYmd(start);
+				if (!isAllday) fm["startTime"] = localHhmm(start);
 			}
 			if (changes.end) {
 				const end = new Date(changes.end as any);
-				const isAllday = changes.isAllday ?? fmAllDay(fm);
 				if (isAllday) {
-					const exclusiveEndStr = end.toISOString().slice(0, 10);
-					const inclusiveEndStr = subOneDay(exclusiveEndStr);
-					fm["endDate"] = inclusiveEndStr !== fm["date"] ? inclusiveEndStr : null;
+					// toTuiEvents emits all-day events with an INCLUSIVE end anchored
+					// at local noon, so what comes back is already the new last day.
+					// There is no exclusive-end offset left to undo here.
+					const lastDay = localYmd(end);
+					fm["endDate"] = lastDay !== fm["date"] ? lastDay : null;
 				} else {
-					fm["endDate"] = end.toISOString().slice(0, 10);
-					fm["endTime"] = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+					const endDay = localYmd(end);
+					fm["endDate"] = endDay !== fm["date"] ? endDay : null;
+					fm["endTime"] = localHhmm(end);
 				}
 			}
-			if (changes.isAllday !== undefined) {
-				fm["allDay"] = changes.isAllday;
-				if (changes.isAllday) {
-					delete fm["startTime"];
-					delete fm["endTime"];
-				}
+
+			// Record the resulting state explicitly and clear what no longer
+			// applies, so the note can never claim to be all-day while still
+			// carrying times, or timed while carrying none.
+			fm["allDay"] = isAllday;
+			if (isAllday) {
+				fm["startTime"] = null;
+				fm["endTime"] = null;
 			}
 			if (changes.title !== undefined) {
 				fm["title"] = changes.title;
