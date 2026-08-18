@@ -260,49 +260,64 @@ export class TwoWaySyncHandler {
 	// as a title change and push it. When the user had deliberately set a
 	// different title, we leave it alone.
 	handleFileRename(file: TFile, oldPath: string): void {
+		if (file.extension !== 'md') return;
 		if (!this.syncReady) return;
 		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return; // the plugin's own renameIfNeeded
-		if (file.extension !== 'md') return;
 
 		const oldBasename = oldPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
 		// A pure folder move leaves the basename alone — nothing to do.
 		if (!oldBasename || oldBasename === file.basename) return;
 
-		this.debounce(file.path, () => this.processRename(file, oldBasename));
+		// Deliberately NOT this.debounce(): that keys on file.path, which
+		// handleFileModify also uses, so Obsidian's own post-rename write (or
+		// the user simply carrying on typing) would cancel the pending rename
+		// handler and the title would never be updated. A short fixed delay is
+		// enough to let those writes land first.
+		window.setTimeout(() => {
+			this.applyRenameToTitle(file, oldBasename).catch(err =>
+				console.error('[google-calendar-sync] rename handling failed:', err));
+		}, 1000);
 	}
 
-	private async processRename(file: TFile, oldBasename: string): Promise<void> {
+	/** Rewrite `title` to match a new filename, when the title had been
+	 *  mirroring the old one. The write is intentionally NOT suppressed —
+	 *  the resulting vault 'modify' feeds the normal debounced push path,
+	 *  which is what actually sends the new title to Google. */
+	private async applyRenameToTitle(file: TFile, oldBasename: string): Promise<void> {
 		if (this.destroyed) return;
-		if (this.getSyncEngineIsSyncing()) return;
 
-		const content = await this.app.vault.read(file);
+		// The file may have been renamed again, or deleted, while we waited.
+		const live = this.app.vault.getAbstractFileByPath(file.path);
+		if (!(live instanceof TFile)) return;
+
+		const content = await this.app.vault.read(live);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
 		if (!fm) return;
-		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) return;
+		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) {
+			console.log(`[google-calendar-sync] rename ignored (not a calendar note): ${live.path}`);
+			return;
+		}
 
 		const currentTitle = typeof fm['title'] === 'string' ? fm['title'].trim() : '';
+		if (currentTitle === live.basename) return; // already matches
 
 		// The title is the user's own wording, not a mirror of the filename.
 		// Renaming the file must not clobber it.
-		if (currentTitle && currentTitle !== oldBasename) return;
-		if (currentTitle === file.basename) return; // already matches
-
-		fm['title'] = file.basename;
-		const body = this.noteManager.extractBody(content);
-		const newContent = this.noteManager.buildNoteContent(fm, body);
-
-		this.noteManager.beginWrite();
-		try {
-			await this.app.vault.modify(file, newContent);
-		} finally {
-			this.noteManager.endWrite();
+		if (currentTitle && currentTitle !== oldBasename) {
+			console.log(
+				`[google-calendar-sync] rename ignored: title "${currentTitle}" was not tracking filename "${oldBasename}"`,
+			);
+			return;
 		}
 
-		console.log(`[google-calendar-sync] renamed: ${file.path} — title "${oldBasename}" → "${file.basename}"`);
+		fm['title'] = live.basename;
+		const body = this.noteManager.extractBody(content);
+		await this.app.vault.modify(live, this.noteManager.buildNoteContent(fm, body));
 
-		// Our own write was suppressed above, so push the new title explicitly.
-		await this.processModification(file);
+		console.log(
+			`[google-calendar-sync] renamed: ${live.path} — title "${oldBasename}" → "${live.basename}" (queued for push)`,
+		);
 	}
 
 	// Entry point for vault 'create' events (user-created notes without event-id)
