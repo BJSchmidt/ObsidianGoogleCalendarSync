@@ -114,6 +114,18 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 	};
 }
 
+// An event with no start time is all-day, whether or not the note bothers to
+// say so. Notes synced down from Google always carry an explicit `allDay`, but
+// user-authored ones (ticket/task notes) routinely have `date` and nothing
+// else. handleNewEvent has always inferred it this way; everything that
+// compares or validates frontmatter must agree, or the create path and the
+// update path disagree about the same note.
+function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
+	if (!fm) return false;
+	if (fm['allDay'] === true || fm['allDay'] === 'true') return true;
+	return !fmTime(fm['startTime']);
+}
+
 // Minimum required fields to create a new Google Calendar event from a note.
 // Only 'date' is strictly required — title falls back to the filename, and
 // calendar falls back to the configured defaultCalendarId.
@@ -156,7 +168,7 @@ export class TwoWaySyncHandler {
 				date: fmDate(fm['date']),
 				startTime: fmTime(fm['startTime']),
 				endTime: fmTime(fm['endTime']),
-				allDay: fm['allDay'] === true || fm['allDay'] === 'true',
+				allDay: fmAllDay(fm),
 				endDate: fmDate(fm['endDate']) || null,
 				location: fm['cal-location'] ?? '',
 				description: fm['cal-description'] ?? '',
@@ -347,7 +359,16 @@ export class TwoWaySyncHandler {
 		this.debounce(file.path, () => this.processNewFile(file));
 	}
 
-	private async processModification(file: TFile): Promise<void> {
+	/** Push a note to Google now, whether or not it looks changed.
+	 *  Needed because the snapshot cache is rebuilt from the notes themselves on
+	 *  every load: if a note was edited while the plugin was off (or a push was
+	 *  dropped), note and snapshot agree on reload and the difference with
+	 *  Google is invisible. Local values win outright here — the user asked. */
+	async forcePushNote(file: TFile): Promise<void> {
+		await this.processModification(file, true);
+	}
+
+	private async processModification(file: TFile, force = false): Promise<void> {
 		if (this.destroyed) return;
 		if (this.getSyncEngineIsSyncing()) {
 			this.retryWhenSyncIdle(file.path, () => this.processModification(file));
@@ -372,7 +393,12 @@ export class TwoWaySyncHandler {
 		}
 
 		const snapshot = this.snapshots.get(eventId);
-		if (!snapshot) return; // Not in our index; skip
+		if (!snapshot) {
+			console.log(
+				`[google-calendar-sync] push skipped for ${file.path}: no snapshot for event ${eventId}`,
+			);
+			return;
+		}
 
 		// Build current state from frontmatter
 		const current: FrontmatterSnapshot = {
@@ -380,7 +406,7 @@ export class TwoWaySyncHandler {
 			date: fmDate(fm['date']),
 			startTime: fmTime(fm['startTime']),
 			endTime: fmTime(fm['endTime']),
-			allDay: fm['allDay'] === true || fm['allDay'] === 'true',
+			allDay: fmAllDay(fm),
 			endDate: fmDate(fm['endDate']) || null,
 			location: (fm['cal-location'] as string) ?? '',
 			description: (fm['cal-description'] as string) ?? '',
@@ -388,16 +414,24 @@ export class TwoWaySyncHandler {
 		};
 
 		// Determine which fields the user changed locally (vs last-known snapshot)
-		const localChanges = WATCHED_FIELDS.filter(
-			field => String(current[field] ?? '') !== String(snapshot[field] ?? '')
-		);
+		const localChanges = force
+			? [...WATCHED_FIELDS]
+			: WATCHED_FIELDS.filter(
+				field => String(current[field] ?? '') !== String(snapshot[field] ?? '')
+			);
 		if (localChanges.length === 0) return;
 
-		// Push-validity guard: only push when the event is in a complete, valid state.
-		if (current.startTime || !current.allDay) {
-			if (!current.endTime || !current.date) return;
-		} else {
-			if (!current.date) return;
+		// Push-validity guard: only push when the event is in a complete, valid
+		// state. Timed events need both ends; all-day events only need a date.
+		const incomplete = current.allDay
+			? (!current.date ? 'date' : '')
+			: (!current.date ? 'date' : !current.endTime ? 'endTime' : '');
+		if (incomplete) {
+			console.log(
+				`[google-calendar-sync] push skipped for ${file.path}: missing ${incomplete}` +
+				` (allDay=${current.allDay}, startTime=${current.startTime ?? 'none'})`,
+			);
+			return;
 		}
 
 		const calendarId: string = (fm['cal-calendar-id'] as string) || this.getSettings().defaultCalendarId;
@@ -415,7 +449,8 @@ export class TwoWaySyncHandler {
 		try {
 			const googleRaw = await this.api.getEvent(calendarId, eventId);
 			const googleUpdated = googleRaw.updated ?? '';
-			const googleIsNewer = !!(googleUpdated && snapshot.updated && googleUpdated > snapshot.updated);
+			const googleIsNewer = !force
+				&& !!(googleUpdated && snapshot.updated && googleUpdated > snapshot.updated);
 			if (googleIsNewer) {
 				const googleState = googleEventToSnapshot(googleRaw);
 

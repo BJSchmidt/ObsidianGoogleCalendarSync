@@ -207,6 +207,20 @@ export default class GoogleCalendarSync extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'push-current-note',
+			name: 'Push current note to Google Calendar',
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== 'md') return false;
+				const cache = this.app.metadataCache.getFileCache(file);
+				const fm = cache?.frontmatter;
+				if (!fm?.['cal-event-id'] || !fm?.['cal-calendar-id']) return false;
+				if (!checking) this.twoWaySync.forcePushNote(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: 'find-duplicate-event-notes',
 			name: 'Find duplicate event notes',
 			callback: () => this.reportDuplicateEventNotes(),
