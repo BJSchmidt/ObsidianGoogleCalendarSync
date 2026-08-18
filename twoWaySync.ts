@@ -128,6 +128,9 @@ export class TwoWaySyncHandler {
 	private syncReady = false;
 	// Set true in destroy() to abort any async work that is still mid-flight
 	private destroyed = false;
+	// key -> how many times a push has been deferred because a G→O sync was running
+	private syncBusyRetries = new Map<string, number>();
+	private readonly MAX_SYNC_BUSY_RETRIES = 10;
 
 	constructor(
 		private app: App,
@@ -235,7 +238,13 @@ export class TwoWaySyncHandler {
 		behavior: 'cancel' | 'delete'
 	): Promise<void> {
 		if (this.destroyed) return;
-		if (this.getSyncEngineIsSyncing()) return;
+		const retryKey = `delete:${eventId}`;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(retryKey, () =>
+				this.processDelete(eventId, calendarId, title, behavior));
+			return;
+		}
+		this.syncBusyRetries.delete(retryKey);
 
 		try {
 			if (behavior === 'delete') {
@@ -340,7 +349,11 @@ export class TwoWaySyncHandler {
 
 	private async processModification(file: TFile): Promise<void> {
 		if (this.destroyed) return;
-		if (this.getSyncEngineIsSyncing()) return;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(file.path, () => this.processModification(file));
+			return;
+		}
+		this.syncBusyRetries.delete(file.path);
 
 		// Read and parse frontmatter directly from file content rather than
 		// relying on the metadata cache (which updates asynchronously).
@@ -500,7 +513,12 @@ export class TwoWaySyncHandler {
 	}
 
 	private async processNewFile(file: TFile): Promise<void> {
-		if (this.getSyncEngineIsSyncing()) return;
+		if (this.destroyed) return;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(file.path, () => this.processNewFile(file));
+			return;
+		}
+		this.syncBusyRetries.delete(file.path);
 
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
@@ -690,6 +708,26 @@ export class TwoWaySyncHandler {
 		return file.path.startsWith(syncFolder + '/');
 	}
 
+	/** A G→O sync is mid-flight, so pushing now would race it. Re-queue the
+	 *  work instead of dropping it: the debounce timer that led here has
+	 *  already fired and been discarded, so nothing else would bring it back.
+	 *  Bounded so a wedged sync can't retry forever. */
+	private retryWhenSyncIdle(key: string, fn: () => void): void {
+		const attempts = (this.syncBusyRetries.get(key) ?? 0) + 1;
+		if (attempts > this.MAX_SYNC_BUSY_RETRIES) {
+			this.syncBusyRetries.delete(key);
+			console.warn(
+				`[google-calendar-sync] sync stayed busy; gave up on the pending push for ${key}`,
+			);
+			return;
+		}
+		this.syncBusyRetries.set(key, attempts);
+		console.log(
+			`[google-calendar-sync] sync in progress — deferring push for ${key} (attempt ${attempts})`,
+		);
+		this.debounce(key, fn);
+	}
+
 	private debounce(key: string, fn: () => void): void {
 		const existing = this.debounceTimers.get(key);
 		if (existing !== undefined) window.clearTimeout(existing);
@@ -711,6 +749,7 @@ export class TwoWaySyncHandler {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.syncBusyRetries.clear();
 		for (const handle of this.debounceTimers.values()) {
 			window.clearTimeout(handle);
 		}
