@@ -161,6 +161,11 @@ export class CalendarFetcher {
 			endD.setDate(endD.getDate() - 1);
 			const adjusted = endD.toISOString().slice(0, 10);
 			if (adjusted !== dateStr) endDateStr = adjusted;
+		} else if (!isAllDay && raw.end?.dateTime) {
+			// A timed event can end on a later day (23:00 → 00:00). Without this
+			// the note loses the end date and the event collapses on next push.
+			const endDay = wallClockDate(raw.end.dateTime, displayTimezone);
+			if (endDay !== dateStr) endDateStr = endDay;
 		}
 
 		// Extract video conference link; fall back to hangoutLink if conferenceData

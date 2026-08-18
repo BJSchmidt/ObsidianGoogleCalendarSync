@@ -99,6 +99,10 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 		endD.setDate(endD.getDate() - 1);
 		const adjusted = endD.toISOString().slice(0, 10);
 		if (adjusted !== dateStr) endDate = adjusted;
+	} else if (!isAllDay && raw.end?.dateTime) {
+		// Timed events can end on a later day; record it so the note round-trips.
+		const endDay = wallClockDate(raw.end.dateTime, timezone);
+		if (endDay !== dateStr) endDate = endDay;
 	}
 
 	return {
@@ -632,7 +636,7 @@ export class TwoWaySyncHandler {
 		} else {
 			const tz = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
 			const startDt = startTime ? toDateTime(date, startTime) : `${date}T00:00:00`;
-			const endDt = endTime ? toDateTime(date, endTime) : startDt;
+			const endDt = endTime ? toDateTime(fmDate(fm['endDate']) || date, endTime) : startDt;
 			event.start = { dateTime: startDt, timeZone: tz };
 			event.end = { dateTime: endDt, timeZone: tz };
 		}
@@ -718,8 +722,10 @@ export class TwoWaySyncHandler {
 				const startDt = current.startTime
 					? toDateTime(current.date, current.startTime)
 					: `${current.date}T00:00:00`;
+				// Honour endDate so events that run past midnight keep their real
+				// end instant instead of collapsing to before their own start.
 				const endDt = current.endTime
-					? toDateTime(current.date, current.endTime)
+					? toDateTime(current.endDate || current.date, current.endTime)
 					: startDt;
 				// Null out date for all-day → timed conversions
 				patch.start = { date: null, dateTime: startDt, timeZone: timezone };

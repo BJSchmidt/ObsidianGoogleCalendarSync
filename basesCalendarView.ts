@@ -187,12 +187,16 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 
 		const startTime = normalizeTo24h(ev.startTime);
 		const endTime = ev.endTime ? normalizeTo24h(ev.endTime) : startTime;
+		// A timed event can finish on a later day (23:00 → 00:00). endDate
+		// carries that; pinning the end to ev.date puts it before the start,
+		// and TUI drops such an event from the grid entirely.
+		const endDay = ev.endTime && ev.endDate ? ev.endDate : ev.date;
 		return {
 			id: ev.id,
 			calendarId: calId,
 			title: ev.title,
 			start: `${ev.date}T${startTime}:00`,
-			end: `${ev.date}T${endTime}:00`,
+			end: `${endDay}T${endTime}:00`,
 			isAllday: false,
 			category: "time",
 			raw: { file: ev.file },
