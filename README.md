@@ -155,6 +155,40 @@ In all cases the plugin creates the event in Google and writes `cal-event-id` ba
 
 ---
 
+## Commands
+
+| Command | What it does |
+|---|---|
+| **Sync Google Calendar** | Pull changes from Google into your notes. |
+| **Force re-sync Google Calendar (refresh all notes)** | Same, but rewrites every note instead of skipping unchanged ones. |
+| **Open Calendar** | Open the `.base` file set in settings. |
+| **New Calendar Event** | Create a new note *and* a new Google event. |
+| **Add to Calendar** | Turn the note you're in into a calendar event. Writes the calendar properties; the event is created on the next sync. |
+| **Edit Calendar Event** | Open the edit form for the note you're in. |
+| **Re-sync current note from Google Calendar** | Pull one note back from Google, overwriting what's in it. |
+| **Push current note to Google Calendar** | Send one note to Google as-is (see below). |
+| **Find duplicate event notes** | List notes sharing a `cal-event-id` in the console. |
+| **Clean duplicate event notes** | Trash the extras, keep the oldest of each. |
+
+### Push current note to Google Calendar
+
+Sends a single note that is **already linked** to a Google event. It only appears
+when the note has both `cal-event-id` and `cal-calendar-id` — it cannot create an
+event, so use **Add to Calendar** for a note Google has never seen.
+
+Unlike a normal edit, it skips the "did anything actually change?" check and sends
+the note as it stands. Local values win outright; Google's version is not merged in.
+
+It exists because of how change detection works. The plugin decides a note changed
+by comparing it against a snapshot — but that snapshot is rebuilt from the notes
+themselves every time the plugin loads. So if a push is ever missed (the plugin was
+off, a sync collided with it, a bug swallowed it), the note and its snapshot agree
+again at the next load and the difference with Google becomes permanently invisible.
+Nothing can detect it, so nothing can repair it. This command is the way out of that
+state.
+
+---
+
 ## Code Structure
 
 ```
