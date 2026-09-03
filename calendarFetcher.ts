@@ -65,6 +65,11 @@ export class CalendarFetcher {
 				params.timeMax = timeMax.toISOString();
 				params.singleEvents = true;
 				params.orderBy = 'startTime';
+				// Ask for cancelled events too. The incremental (syncToken) path
+				// returns them automatically, but a full sync omits them by
+				// default — so an event deleted elsewhere simply stops appearing
+				// in the results and its note is never marked as cancelled.
+				params.showDeleted = true;
 			}
 
 			const allEvents: calendar_v3.Schema$Event[] = [];

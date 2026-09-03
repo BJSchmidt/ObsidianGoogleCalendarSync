@@ -450,8 +450,10 @@ export class TwoWaySyncHandler {
 		// and this local edit — otherwise the stale local time would overwrite
 		// the change in Google.
 		let merged = current;
+		let googleStatus = '';
 		try {
 			const googleRaw = await this.api.getEvent(calendarId, eventId);
+			googleStatus = googleRaw.status ?? '';
 			const googleUpdated = googleRaw.updated ?? '';
 			const googleIsNewer = !force
 				&& !!(googleUpdated && snapshot.updated && googleUpdated > snapshot.updated);
@@ -498,7 +500,15 @@ export class TwoWaySyncHandler {
 			return;
 		}
 
-		const patch = this.buildPatch(merged, fm, timezone);
+		// Only an explicit push may undelete. A background push triggered by an
+		// ordinary edit must not, or deleting an event on your phone and then
+		// touching the note in Obsidian would silently resurrect it.
+		const restoreCancelled = force && googleStatus === 'cancelled';
+		if (restoreCancelled) {
+			this.notify(`"${merged.title}" was deleted in Google — restoring it.`, 8000);
+		}
+
+		const patch = this.buildPatch(merged, fm, timezone, restoreCancelled);
 
 		try {
 			const updated = await this.api.updateEvent(calendarId, eventId, patch);
@@ -703,8 +713,20 @@ export class TwoWaySyncHandler {
 		this.notify(`Created "${title}" in Google Calendar.`);
 	}
 
-	private buildPatch(current: FrontmatterSnapshot, fm: Record<string, unknown>, timezone: string): calendar_v3.Schema$Event {
+	private buildPatch(
+		current: FrontmatterSnapshot,
+		fm: Record<string, unknown>,
+		timezone: string,
+		restoreCancelled = false,
+	): calendar_v3.Schema$Event {
 		const patch: calendar_v3.Schema$Event = {};
+
+		// Deleting an event in Google does not remove it — it sets status to
+		// 'cancelled', which hides it. Patching any other field leaves it
+		// cancelled and therefore still invisible, which is why an ordinary
+		// push appears to succeed and change nothing. Flipping status back
+		// undeletes it, up until Google eventually purges the event for good.
+		if (restoreCancelled) patch.status = 'confirmed';
 
 		if (current.title) patch.summary = current.title;
 		if (current.location !== undefined) patch.location = current.location || undefined;
