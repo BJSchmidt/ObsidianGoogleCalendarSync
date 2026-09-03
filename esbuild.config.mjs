@@ -40,6 +40,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "main.js",
 	minify: prod,
+	loader: { ".css": "text" },
 });
 
 if (prod) {

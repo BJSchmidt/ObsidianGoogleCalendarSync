@@ -14,3 +14,209 @@
 	color: var(--text-normal);
 	box-sizing: border-box;
 }
+
+/* Create/Edit Event Modal */
+.cal-create-event-modal .setting-item {
+	border-top: none;
+}
+
+.cal-create-event-modal textarea {
+	width: 100%;
+	min-height: 80px;
+	resize: vertical;
+}
+
+/* Wide controls: Title, Location, Tags, People, Description */
+.cal-create-event-modal .cal-modal-wide-control {
+	flex-grow: 1;
+}
+
+.cal-create-event-modal .cal-modal-wide-control input[type="text"],
+.cal-create-event-modal .cal-modal-wide-control textarea {
+	width: 100%;
+}
+
+.cal-create-event-modal .cal-modal-wide-control .cal-multi-input {
+	width: 100%;
+}
+
+/* Native date picker inputs */
+.cal-create-event-modal .cal-modal-date-input {
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--input-radius);
+	color: var(--text-normal);
+	padding: 4px 8px;
+	font-size: var(--font-ui-small);
+	font-family: inherit;
+}
+
+/* Multi-value input with chips (tags, people) */
+.cal-multi-input {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	min-height: 32px;
+	padding: 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-modifier-form-field);
+	width: 100%;
+}
+
+.cal-multi-chips {
+	display: contents;
+}
+
+/* People chips (default style) */
+.cal-multi-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 8px;
+	border-radius: 12px;
+	background: var(--tag-background);
+	color: var(--tag-color);
+	font-size: var(--font-smaller);
+	white-space: nowrap;
+	text-decoration: none;
+}
+
+/* Tag chips use Obsidian's native .tag class — just add flex for the remove button */
+.cal-multi-input .tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	cursor: default;
+}
+
+/* Remove button on all chip types */
+.cal-multi-chip-remove {
+	cursor: pointer;
+	opacity: 0.6;
+	font-size: 14px;
+	line-height: 1;
+}
+
+.cal-multi-chip-remove:hover {
+	opacity: 1;
+}
+
+.cal-multi-text-input {
+	border: none !important;
+	outline: none !important;
+	box-shadow: none !important;
+	background: transparent !important;
+	flex: 1;
+	min-width: 80px;
+	padding: 2px 4px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+/* ===== Bases Calendar Views ===== */
+
+.cal-view-container {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+/* Navigation header */
+.cal-view-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 4px;
+	margin-bottom: 4px;
+}
+
+.cal-view-title {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	flex: 1;
+	text-align: center;
+}
+
+.cal-view-nav-btn {
+	background: none;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	color: var(--text-normal);
+	font-size: 18px;
+	width: 28px;
+	height: 28px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+}
+
+.cal-view-nav-btn:hover {
+	background: var(--background-modifier-hover);
+}
+
+.cal-view-today-btn {
+	background: none;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	padding: 2px 10px;
+	margin-left: auto;
+}
+
+.cal-view-today-btn:hover {
+	background: var(--background-modifier-hover);
+}
+
+/* TUI Calendar container */
+.cal-view-tui-container {
+	flex: 1;
+	min-height: 400px;
+	border-top: 1px solid var(--background-modifier-border);
+	border-right: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.cal-view-tui-container .toastui-calendar-event {
+	cursor: pointer;
+}
+
+/* Hour grid line — gradient-based dashed border for fine control */
+.cal-view-tui-container .toastui-calendar-gridline-half:nth-child(odd) {
+	background-image: linear-gradient(
+		to right,
+		var(--background-modifier-border) 40%,
+		transparent 0%
+	);
+	background-position: top;
+	background-size: 8px 1px;
+	background-repeat: repeat-x;
+}
+
+/* Today cell background in month/2-week views */
+.cal-view-tui-container .toastui-calendar-daygrid-cell:has(.toastui-calendar-weekday-grid-date-decorator) {
+	background-color: color-mix(in srgb, var(--interactive-accent) 10%, transparent) !important;
+}
+
+/* Today circle in month/2-week views — use Obsidian accent instead of TUI's hardcoded blue */
+.cal-view-tui-container .toastui-calendar-weekday-grid-date-decorator {
+	background-color: var(--interactive-accent) !important;
+	color: #ffffff !important;
+}
+
+/* Fix: remove 10px padding offset on month day-names row */
+.cal-view-tui-container .toastui-calendar-day-names.toastui-calendar-month {
+	padding: 0 !important;
+}
+
+/* Fix: account for border (top + bottom) on week day-names row */
+.cal-view-tui-container .toastui-calendar-panel.toastui-calendar-week-view-day-names {
+	height: 45px !important;
+}
+
+

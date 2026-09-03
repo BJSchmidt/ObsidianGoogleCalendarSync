@@ -10,7 +10,6 @@ export interface GoogleCalendarSyncSettings {
 	autoSyncInterval: number;
 	lastSyncTime: string;
 	syncTokens: Record<string, string>;
-	noteTitleFormat: string;
 	templatePath: string;
 	newEventTemplatePath: string;
 	defaultCalendarId: string;
@@ -22,6 +21,18 @@ export interface GoogleCalendarSyncSettings {
 	onNoteDeleteBehavior: 'ignore' | 'cancel' | 'delete';
 	showPushNotifications: boolean;
 	cachedCalendars: GoogleCalendarListEntry[];
+	calendarBasePath: string;
+	showCalendarRibbonButton: boolean;
+	// Single-device ownership. `syncEnabledOnDevice` lives in localStorage (not
+	// here) because it must NOT propagate via Obsidian Sync — each device opts
+	// in independently. These two fields DO propagate and are used to warn
+	// when another device is actively syncing the same vault.
+	lastSyncDeviceId: string;
+	lastSyncDeviceName: string;
+	lastSyncAt: string; // ISO timestamp of the most recent sync run
+	// Seconds to wait after the last edit to a note before pushing the change
+	// to Google. Longer values batch active editing sessions into one push.
+	twoWaySyncDebounceSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
@@ -36,7 +47,6 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	autoSyncInterval: 15,
 	lastSyncTime: '',
 	syncTokens: {},
-	noteTitleFormat: '{title} {date}',
 	templatePath: '',
 	newEventTemplatePath: '',
 	defaultCalendarId: 'primary',
@@ -48,6 +58,12 @@ export const DEFAULT_SETTINGS: GoogleCalendarSyncSettings = {
 	onNoteDeleteBehavior: 'ignore',
 	showPushNotifications: true,
 	cachedCalendars: [],
+	calendarBasePath: '',
+	showCalendarRibbonButton: false,
+	lastSyncDeviceId: '',
+	lastSyncDeviceName: '',
+	lastSyncAt: '',
+	twoWaySyncDebounceSeconds: 15,
 };
 
 export interface CalendarEventNote {
@@ -92,6 +108,21 @@ export interface GoogleCalendarListEntry {
 	color: string;
 	isPrimary: boolean;
 	accessRole: string;
+}
+
+export interface NewEventFormData {
+	title: string;
+	date: string;        // YYYY-MM-DD
+	startTime: string;   // HH:MM or empty
+	endTime: string;     // HH:MM or empty
+	endDate: string;     // YYYY-MM-DD or empty (for multi-day timed events)
+	allDay: boolean;
+	calendarId: string;
+	calendarName: string;
+	location: string;
+	description: string;
+	tags: string[];      // e.g. ['meeting', 'project-x']
+	people: string[];    // e.g. ['[[John Doe]]', '[[Jane Smith]]']
 }
 
 export interface SyncResult {

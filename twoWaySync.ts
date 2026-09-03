@@ -3,6 +3,7 @@ import { calendar_v3 } from 'googleapis';
 import { GoogleCalendarAPI } from './googleCalendarAPI';
 import { NoteManager } from './noteManager';
 import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } from './types';
+import { isSyncEnabledOnDevice } from './deviceOwnership';
 
 // Frontmatter fields that, when changed, trigger a push to Google Calendar
 const WATCHED_FIELDS: (keyof FrontmatterSnapshot)[] = [
@@ -81,7 +82,10 @@ function fmTime(val: unknown): string | null {
 // Convert a raw Google Calendar API event to snapshot-comparable fields
 function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<FrontmatterSnapshot> {
 	const isAllDay = !raw.start?.dateTime;
-	const timezone = raw.start?.timeZone ?? raw.end?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+	// Convert times to the user's local zone so the snapshot matches what
+	// calendarFetcher writes into the note (local wall-clock, regardless of
+	// the event's source timezone like "UTC").
+	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const dateStr = raw.start?.date
 		?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, timezone) : '');
 	let startTimeStr: string | null = null;
@@ -95,6 +99,10 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 		endD.setDate(endD.getDate() - 1);
 		const adjusted = endD.toISOString().slice(0, 10);
 		if (adjusted !== dateStr) endDate = adjusted;
+	} else if (!isAllDay && raw.end?.dateTime) {
+		// Timed events can end on a later day; record it so the note round-trips.
+		const endDay = wallClockDate(raw.end.dateTime, timezone);
+		if (endDay !== dateStr) endDate = endDay;
 	}
 
 	return {
@@ -110,9 +118,21 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 	};
 }
 
+// An event with no start time is all-day, whether or not the note bothers to
+// say so. Notes synced down from Google always carry an explicit `allDay`, but
+// user-authored ones (ticket/task notes) routinely have `date` and nothing
+// else. handleNewEvent has always inferred it this way; everything that
+// compares or validates frontmatter must agree, or the create path and the
+// update path disagree about the same note.
+export function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
+	if (!fm) return false;
+	if (fm['allDay'] === true || fm['allDay'] === 'true') return true;
+	return !fmTime(fm['startTime']);
+}
+
 // Minimum required fields to create a new Google Calendar event from a note.
 // Only 'date' is strictly required — title falls back to the filename, and
-// cal-calendar falls back to the configured defaultCalendarId.
+// calendar falls back to the configured defaultCalendarId.
 const REQUIRED_NEW_EVENT_FIELDS = ['date'];
 
 export class TwoWaySyncHandler {
@@ -120,11 +140,13 @@ export class TwoWaySyncHandler {
 	private snapshots = new Map<string, FrontmatterSnapshot>();
 	// file path -> debounce timer handle
 	private debounceTimers = new Map<string, number>();
-	private readonly DEBOUNCE_MS = 4000;
 	// Set true after the first G→O sync completes; O→G watching is blocked until then
 	private syncReady = false;
 	// Set true in destroy() to abort any async work that is still mid-flight
 	private destroyed = false;
+	// key -> how many times a push has been deferred because a G→O sync was running
+	private syncBusyRetries = new Map<string, number>();
+	private readonly MAX_SYNC_BUSY_RETRIES = 10;
 
 	constructor(
 		private app: App,
@@ -137,20 +159,11 @@ export class TwoWaySyncHandler {
 	// Scan all existing event notes and populate the snapshot cache
 	async initialize(): Promise<void> {
 		this.snapshots.clear();
-		const settings = this.getSettings();
-		const folder = this.app.vault.getAbstractFileByPath(
-			normalizePath(settings.syncFolder)
-		);
-		if (!folder) return;
 
-		const allFiles = this.app.vault.getMarkdownFiles();
-		const syncFolderPrefix = normalizePath(settings.syncFolder) + '/';
-
-		for (const file of allFiles) {
-			if (!file.path.startsWith(syncFolderPrefix)) continue;
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			const fm = cache?.frontmatter;
-			if (!fm || fm['cal-type'] !== 'calendar-event') continue;
+			if (!fm) continue;
 			const eventId = fm['cal-event-id'];
 			if (!eventId || typeof eventId !== 'string' || !eventId.trim()) continue;
 
@@ -159,7 +172,7 @@ export class TwoWaySyncHandler {
 				date: fmDate(fm['date']),
 				startTime: fmTime(fm['startTime']),
 				endTime: fmTime(fm['endTime']),
-				allDay: fm['allDay'] === true || fm['allDay'] === 'true',
+				allDay: fmAllDay(fm),
 				endDate: fmDate(fm['endDate']) || null,
 				location: fm['cal-location'] ?? '',
 				description: fm['cal-description'] ?? '',
@@ -182,20 +195,18 @@ export class TwoWaySyncHandler {
 		this.syncReady = value;
 	}
 
-	// Scan all files in the sync folder for ones that have a date but no cal-event-id.
-	// This catches events created by tools like Full Calendar that don't go through
-	// our create/modify hooks (e.g. they existed before the plugin loaded).
+	// Scan the entire vault for notes that have 'calendar' + 'date' but no cal-event-id.
+	// This catches events created before the plugin loaded or notes that the user
+	// has manually tagged as calendar events.
 	async scanForUnsyncedFiles(): Promise<void> {
-		const syncFolderPrefix = normalizePath(this.getSettings().syncFolder) + '/';
-		const allFiles = this.app.vault.getMarkdownFiles();
-
-		for (const file of allFiles) {
+		if (!isSyncEnabledOnDevice()) return;
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (this.destroyed) return;
-			if (!file.path.startsWith(syncFolderPrefix)) continue;
 
 			const content = await this.app.vault.read(file);
 			const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
 			if (!fm || !fm['date']) continue;
+			if (!fm['calendar'] && !fm['cal-calendar']) continue;
 
 			const eventId = fm['cal-event-id'] as string | undefined;
 			if (eventId && eventId.trim()) continue; // Already synced
@@ -206,17 +217,23 @@ export class TwoWaySyncHandler {
 
 	// Entry point for vault 'modify' events
 	handleFileModify(file: TFile): void {
-		console.log('[GCal] handleFileModify', file.path, 'syncReady:', this.syncReady, 'isWriting:', this.noteManager.isWriting, 'inFolder:', this.isInSyncFolder(file));
 		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return;
-		if (!this.isInSyncFolder(file)) return;
+		if (file.extension !== 'md') return;
 
+		// Don't gate on metadataCache here — when the calendar field was just
+		// added by the Add-to-Calendar modal the cache is still stale and would
+		// report the file as non-calendar. processModification reads the actual
+		// file content and bails out cheaply if the frontmatter has nothing
+		// calendar-related, so always queueing is safe.
 		this.debounce(file.path, () => this.processModification(file));
 	}
 
 	// Entry point for vault 'delete' events — push deletion to Google if configured
 	handleFileDelete(file: TFile, frontmatter: Record<string, unknown>): void {
 		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
 		if (this.noteManager.isWriting) return;
 
 		const behavior = this.getSettings().onNoteDeleteBehavior;
@@ -237,7 +254,13 @@ export class TwoWaySyncHandler {
 		behavior: 'cancel' | 'delete'
 	): Promise<void> {
 		if (this.destroyed) return;
-		if (this.getSyncEngineIsSyncing()) return;
+		const retryKey = `delete:${eventId}`;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(retryKey, () =>
+				this.processDelete(eventId, calendarId, title, behavior));
+			return;
+		}
+		this.syncBusyRetries.delete(retryKey);
 
 		try {
 			if (behavior === 'delete') {
@@ -253,32 +276,116 @@ export class TwoWaySyncHandler {
 		}
 	}
 
+	// Entry point for vault 'rename' events.
+	//
+	// Obsidian does not rewrite frontmatter on a rename, so a note whose `title`
+	// was mirroring its filename (the common case for ticket/task notes added
+	// through "Add to Calendar") kept the stale title and Google never saw the
+	// new name. When the old title matched the old filename we treat the rename
+	// as a title change and push it. When the user had deliberately set a
+	// different title, we leave it alone.
+	handleFileRename(file: TFile, oldPath: string): void {
+		if (file.extension !== 'md') return;
+		if (!this.syncReady) return;
+		if (!isSyncEnabledOnDevice()) return;
+		if (this.noteManager.isWriting) return; // the plugin's own renameIfNeeded
+
+		const oldBasename = oldPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+		// A pure folder move leaves the basename alone — nothing to do.
+		if (!oldBasename || oldBasename === file.basename) return;
+
+		// Deliberately NOT this.debounce(): that keys on file.path, which
+		// handleFileModify also uses, so Obsidian's own post-rename write (or
+		// the user simply carrying on typing) would cancel the pending rename
+		// handler and the title would never be updated. A short fixed delay is
+		// enough to let those writes land first.
+		window.setTimeout(() => {
+			this.applyRenameToTitle(file, oldBasename).catch(err =>
+				console.error('[google-calendar-sync] rename handling failed:', err));
+		}, 1000);
+	}
+
+	/** Rewrite `title` to match a new filename, when the title had been
+	 *  mirroring the old one. The write is intentionally NOT suppressed —
+	 *  the resulting vault 'modify' feeds the normal debounced push path,
+	 *  which is what actually sends the new title to Google. */
+	private async applyRenameToTitle(file: TFile, oldBasename: string): Promise<void> {
+		if (this.destroyed) return;
+
+		// The file may have been renamed again, or deleted, while we waited.
+		const live = this.app.vault.getAbstractFileByPath(file.path);
+		if (!(live instanceof TFile)) return;
+
+		const content = await this.app.vault.read(live);
+		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
+		if (!fm) return;
+		if (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar']) {
+			console.log(`[google-calendar-sync] rename ignored (not a calendar note): ${live.path}`);
+			return;
+		}
+
+		const currentTitle = typeof fm['title'] === 'string' ? fm['title'].trim() : '';
+		if (currentTitle === live.basename) return; // already matches
+
+		// Notes inside the sync folder are plugin-managed: their filename is
+		// derived from Google's title, and can carry a date or event-id suffix
+		// when two events collide. Letting the filename drive the title there
+		// would write those suffixes into the event name, so only follow a
+		// rename when the title really was mirroring the old filename.
+		//
+		// Everywhere else — ticket notes, task notes, anything the user names
+		// themselves — the filename IS the name, so a rename is a rename even
+		// if the title had drifted out of step with it.
+		if (this.isInSyncFolder(live) && currentTitle && currentTitle !== oldBasename) {
+			console.log(
+				`[google-calendar-sync] rename ignored for managed note: title "${currentTitle}" was not tracking filename "${oldBasename}"`,
+			);
+			return;
+		}
+
+		fm['title'] = live.basename;
+		const body = this.noteManager.extractBody(content);
+		await this.app.vault.modify(live, this.noteManager.buildNoteContent(fm, body));
+
+		console.log(
+			`[google-calendar-sync] renamed: ${live.path} — title "${currentTitle}" → "${live.basename}" (queued for push)`,
+		);
+	}
+
 	// Entry point for vault 'create' events (user-created notes without event-id)
 	handleFileCreate(file: TFile): void {
-		console.log('[GCal] handleFileCreate', file.path, 'syncReady:', this.syncReady, 'isWriting:', this.noteManager.isWriting, 'inFolder:', this.isInSyncFolder(file));
 		if (!this.syncReady) return;
 		if (this.noteManager.isWriting) return;
-		if (!this.isInSyncFolder(file)) return;
+		if (!this.isCalendarRelevant(file)) return;
 		if (file.extension !== 'md') return;
 
 		// Debounce: wait for user to finish filling in the template
 		this.debounce(file.path, () => this.processNewFile(file));
 	}
 
-	private async processModification(file: TFile): Promise<void> {
-		console.log('[GCal] processModification', file.path, 'destroyed:', this.destroyed, 'isSyncing:', this.getSyncEngineIsSyncing());
+	/** Push a note to Google now, whether or not it looks changed.
+	 *  Needed because the snapshot cache is rebuilt from the notes themselves on
+	 *  every load: if a note was edited while the plugin was off (or a push was
+	 *  dropped), note and snapshot agree on reload and the difference with
+	 *  Google is invisible. Local values win outright here — the user asked. */
+	async forcePushNote(file: TFile): Promise<void> {
+		await this.processModification(file, true);
+	}
+
+	private async processModification(file: TFile, force = false): Promise<void> {
 		if (this.destroyed) return;
-		if (this.getSyncEngineIsSyncing()) return;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(file.path, () => this.processModification(file));
+			return;
+		}
+		this.syncBusyRetries.delete(file.path);
 
 		// Read and parse frontmatter directly from file content rather than
 		// relying on the metadata cache (which updates asynchronously).
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
-		console.log('[GCal] processModification fm:', JSON.stringify(fm));
-		// Accept files that are already marked as calendar events OR any file in the
-		// sync folder that has a date property (e.g. events created by Full Calendar).
-		if (!fm || (fm['cal-type'] !== 'calendar-event' && !fm['date'])) {
-			console.log('[GCal] processModification: skipping - no cal-type and no date');
+		// Accept files that have a cal-event-id (already synced) or a calendar property
+		if (!fm || (!fm['cal-event-id'] && !fm['calendar'] && !fm['cal-calendar'])) {
 			return;
 		}
 
@@ -290,7 +397,12 @@ export class TwoWaySyncHandler {
 		}
 
 		const snapshot = this.snapshots.get(eventId);
-		if (!snapshot) return; // Not in our index; skip
+		if (!snapshot) {
+			console.log(
+				`[google-calendar-sync] push skipped for ${file.path}: no snapshot for event ${eventId}`,
+			);
+			return;
+		}
 
 		// Build current state from frontmatter
 		const current: FrontmatterSnapshot = {
@@ -298,7 +410,7 @@ export class TwoWaySyncHandler {
 			date: fmDate(fm['date']),
 			startTime: fmTime(fm['startTime']),
 			endTime: fmTime(fm['endTime']),
-			allDay: fm['allDay'] === true || fm['allDay'] === 'true',
+			allDay: fmAllDay(fm),
 			endDate: fmDate(fm['endDate']) || null,
 			location: (fm['cal-location'] as string) ?? '',
 			description: (fm['cal-description'] as string) ?? '',
@@ -306,27 +418,46 @@ export class TwoWaySyncHandler {
 		};
 
 		// Determine which fields the user changed locally (vs last-known snapshot)
-		const localChanges = WATCHED_FIELDS.filter(
-			field => String(current[field] ?? '') !== String(snapshot[field] ?? '')
-		);
+		const localChanges = force
+			? [...WATCHED_FIELDS]
+			: WATCHED_FIELDS.filter(
+				field => String(current[field] ?? '') !== String(snapshot[field] ?? '')
+			);
 		if (localChanges.length === 0) return;
 
-		// Push-validity guard: only push when the event is in a complete, valid state.
-		if (current.startTime || !current.allDay) {
-			if (!current.endTime || !current.date) return;
-		} else {
-			if (!current.date) return;
+		// Push-validity guard: only push when the event is in a complete, valid
+		// state. Timed events need both ends; all-day events only need a date.
+		const incomplete = current.allDay
+			? (!current.date ? 'date' : '')
+			: (!current.date ? 'date' : !current.endTime ? 'endTime' : '');
+		if (incomplete) {
+			console.log(
+				`[google-calendar-sync] push skipped for ${file.path}: missing ${incomplete}` +
+				` (allDay=${current.allDay}, startTime=${current.startTime ?? 'none'})`,
+			);
+			return;
 		}
 
 		const calendarId: string = (fm['cal-calendar-id'] as string) || this.getSettings().defaultCalendarId;
-		const timezone = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+		// startTime/endTime in the note are stored as LOCAL wall-clock (calendarFetcher
+		// converts to the user's local zone on fetch), so push with the local zone —
+		// even if the source event was created against a different zone like UTC.
+		const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Field-level merge: if Google also changed since our snapshot, fetch the
-		// current Google state and merge non-overlapping changes.
+		// Field-level merge: always fetch Google's current state and compare against
+		// our snapshot. Catches the case where Google was updated externally (e.g.
+		// an attendee accepted a proposed time in Gmail) between our last sync
+		// and this local edit — otherwise the stale local time would overwrite
+		// the change in Google.
 		let merged = current;
-		if (current.updated && snapshot.updated && current.updated < snapshot.updated) {
-			try {
-				const googleRaw = await this.api.getEvent(calendarId, eventId);
+		let googleStatus = '';
+		try {
+			const googleRaw = await this.api.getEvent(calendarId, eventId);
+			googleStatus = googleRaw.status ?? '';
+			const googleUpdated = googleRaw.updated ?? '';
+			const googleIsNewer = !force
+				&& !!(googleUpdated && snapshot.updated && googleUpdated > snapshot.updated);
+			if (googleIsNewer) {
 				const googleState = googleEventToSnapshot(googleRaw);
 
 				// Determine which fields Google changed (vs our snapshot)
@@ -361,14 +492,23 @@ export class TwoWaySyncHandler {
 					this.updateSnapshot(eventId, { ...merged, updated: googleRaw.updated ?? snapshot.updated });
 					return;
 				}
-			} catch (err) {
-				// Can't fetch Google state — fall back to discarding local change
-				this.notify(`Sync conflict on "${fm['title']}": couldn't fetch Google version. Local change discarded.`);
-				return;
 			}
+		} catch (err) {
+			// Can't fetch Google state — skip this push to avoid overwriting
+			// potentially newer remote data with stale local state.
+			this.notify(`Sync check failed for "${fm['title']}": couldn't fetch Google version. Local change not pushed.`);
+			return;
 		}
 
-		const patch = this.buildPatch(merged, fm, timezone);
+		// Only an explicit push may undelete. A background push triggered by an
+		// ordinary edit must not, or deleting an event on your phone and then
+		// touching the note in Obsidian would silently resurrect it.
+		const restoreCancelled = force && googleStatus === 'cancelled';
+		if (restoreCancelled) {
+			this.notify(`"${merged.title}" was deleted in Google — restoring it.`, 8000);
+		}
+
+		const patch = this.buildPatch(merged, fm, timezone, restoreCancelled);
 
 		try {
 			const updated = await this.api.updateEvent(calendarId, eventId, patch);
@@ -391,9 +531,9 @@ export class TwoWaySyncHandler {
 					this.noteManager.endWrite();
 				}
 			}
-			// Rename the file if title or date changed (mirrors the rename in updateEventNote)
-			if (localChanges.includes('title') || localChanges.includes('date')) {
-				const calendarName = (fm['cal-calendar'] as string) ?? '';
+			// Rename the file if title or date changed — only for managed notes in the sync folder
+			if ((localChanges.includes('title') || localChanges.includes('date')) && this.isInSyncFolder(file)) {
+				const calendarName = (fm['calendar'] as string) ?? (fm['cal-calendar'] as string) ?? '';
 				const desiredPath = this.noteManager.getNotePathForEvent({
 					title: merged.title,
 					date: merged.date,
@@ -422,13 +562,17 @@ export class TwoWaySyncHandler {
 	}
 
 	private async processNewFile(file: TFile): Promise<void> {
-		if (this.getSyncEngineIsSyncing()) return;
+		if (this.destroyed) return;
+		if (this.getSyncEngineIsSyncing()) {
+			this.retryWhenSyncIdle(file.path, () => this.processNewFile(file));
+			return;
+		}
+		this.syncBusyRetries.delete(file.path);
 
 		const content = await this.app.vault.read(file);
 		const fm = this.noteManager.parseFrontmatter(content) as Record<string, unknown>;
-		// Accept files that are already marked as calendar events OR any file in the
-		// sync folder that has a date property (e.g. events created by Full Calendar).
-		if (!fm || (fm['cal-type'] !== 'calendar-event' && !fm['date'])) return;
+		const calendarField = fm?.['calendar'] ?? fm?.['cal-calendar'];
+		if (!fm || (!calendarField && fm['cal-type'] !== 'calendar-event')) return;
 
 		const eventId: string | undefined = fm['cal-event-id'] as string | undefined;
 		if (eventId && eventId.trim()) return; // Already has event-id; not a new event
@@ -437,7 +581,6 @@ export class TwoWaySyncHandler {
 	}
 
 	private async handleNewEvent(file: TFile, fm: Record<string, unknown>): Promise<void> {
-		console.log('[GCal] handleNewEvent', file.path);
 		if (this.destroyed) return;
 
 		// Validate required fields
@@ -446,15 +589,14 @@ export class TwoWaySyncHandler {
 			return !val || (typeof val === 'string' && !val.trim());
 		});
 		if (missing.length > 0) {
-			console.log('[GCal] handleNewEvent: missing fields', missing);
 			return; // Not ready yet; will retry on next save
 		}
 
 		const title = String(fm['title'] ?? '') || file.basename;
 		const date = fmDate(fm['date']);
-		const calendarFieldValue = String(fm['cal-calendar'] ?? '');
+		const calendarFieldValue = String(fm['calendar'] ?? fm['cal-calendar'] ?? '');
 
-		// Resolve calendar ID: match 'cal-calendar' field against known names or IDs,
+		// Resolve calendar ID: match 'calendar' field against known names or IDs,
 		// then fall back to the parent folder name, then to defaultCalendarId.
 		let calendarId = this.getSettings().defaultCalendarId;
 		if (calendarFieldValue && calendarFieldValue !== calendarId) {
@@ -477,9 +619,8 @@ export class TwoWaySyncHandler {
 			if (folderMatch) calendarId = folderMatch.id;
 		}
 
-		console.log('[GCal] handleNewEvent: resolved calendarId:', calendarId, 'folderName:', file.parent?.name);
 		if (!calendarId) {
-			this.notify(`Cannot sync "${title}": no calendar found. Set cal-calendar in the note or configure a default calendar.`);
+			this.notify(`Cannot sync "${title}": no calendar found. Set "calendar" in the note or configure a default calendar.`);
 			return;
 		}
 		if (this.destroyed) return;
@@ -487,7 +628,7 @@ export class TwoWaySyncHandler {
 		// Build the Google event resource
 		const startTime = fmTime(fm['startTime']);
 		const endTime = fmTime(fm['endTime']);
-		const allDay = !startTime;
+		const allDay = fmAllDay(fm);
 
 		const event: calendar_v3.Schema$Event = {
 			summary: title,
@@ -505,7 +646,7 @@ export class TwoWaySyncHandler {
 		} else {
 			const tz = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
 			const startDt = startTime ? toDateTime(date, startTime) : `${date}T00:00:00`;
-			const endDt = endTime ? toDateTime(date, endTime) : startDt;
+			const endDt = endTime ? toDateTime(fmDate(fm['endDate']) || date, endTime) : startDt;
 			event.start = { dateTime: startDt, timeZone: tz };
 			event.end = { dateTime: endDt, timeZone: tz };
 		}
@@ -572,8 +713,20 @@ export class TwoWaySyncHandler {
 		this.notify(`Created "${title}" in Google Calendar.`);
 	}
 
-	private buildPatch(current: FrontmatterSnapshot, fm: Record<string, unknown>, timezone: string): calendar_v3.Schema$Event {
+	private buildPatch(
+		current: FrontmatterSnapshot,
+		fm: Record<string, unknown>,
+		timezone: string,
+		restoreCancelled = false,
+	): calendar_v3.Schema$Event {
 		const patch: calendar_v3.Schema$Event = {};
+
+		// Deleting an event in Google does not remove it — it sets status to
+		// 'cancelled', which hides it. Patching any other field leaves it
+		// cancelled and therefore still invisible, which is why an ordinary
+		// push appears to succeed and change nothing. Flipping status back
+		// undeletes it, up until Google eventually purges the event for good.
+		if (restoreCancelled) patch.status = 'confirmed';
 
 		if (current.title) patch.summary = current.title;
 		if (current.location !== undefined) patch.location = current.location || undefined;
@@ -591,8 +744,10 @@ export class TwoWaySyncHandler {
 				const startDt = current.startTime
 					? toDateTime(current.date, current.startTime)
 					: `${current.date}T00:00:00`;
+				// Honour endDate so events that run past midnight keep their real
+				// end instant instead of collapsing to before their own start.
 				const endDt = current.endTime
-					? toDateTime(current.date, current.endTime)
+					? toDateTime(current.endDate || current.date, current.endTime)
 					: startDt;
 				// Null out date for all-day → timed conversions
 				patch.start = { date: null, dateTime: startDt, timeZone: timezone };
@@ -603,18 +758,50 @@ export class TwoWaySyncHandler {
 		return patch;
 	}
 
+	private isCalendarRelevant(file: TFile): boolean {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const fm = cache?.frontmatter;
+		if (fm && (fm['cal-event-id'] || fm['calendar'] || fm['cal-calendar'])) return true;
+		// Fallback: sync folder files (metadata may not be ready yet for new files)
+		return this.isInSyncFolder(file);
+	}
+
 	private isInSyncFolder(file: TFile): boolean {
 		const syncFolder = normalizePath(this.getSettings().syncFolder);
 		return file.path.startsWith(syncFolder + '/');
 	}
 
+	/** A G→O sync is mid-flight, so pushing now would race it. Re-queue the
+	 *  work instead of dropping it: the debounce timer that led here has
+	 *  already fired and been discarded, so nothing else would bring it back.
+	 *  Bounded so a wedged sync can't retry forever. */
+	private retryWhenSyncIdle(key: string, fn: () => void): void {
+		const attempts = (this.syncBusyRetries.get(key) ?? 0) + 1;
+		if (attempts > this.MAX_SYNC_BUSY_RETRIES) {
+			this.syncBusyRetries.delete(key);
+			console.warn(
+				`[google-calendar-sync] sync stayed busy; gave up on the pending push for ${key}`,
+			);
+			return;
+		}
+		this.syncBusyRetries.set(key, attempts);
+		console.log(
+			`[google-calendar-sync] sync in progress — deferring push for ${key} (attempt ${attempts})`,
+		);
+		this.debounce(key, fn);
+	}
+
 	private debounce(key: string, fn: () => void): void {
 		const existing = this.debounceTimers.get(key);
 		if (existing !== undefined) window.clearTimeout(existing);
+		const seconds = this.getSettings().twoWaySyncDebounceSeconds;
+		// Clamp to sensible range — too short causes spammy half-edit pushes,
+		// too long delays the round-trip past usefulness.
+		const ms = Math.max(2, Math.min(120, Number.isFinite(seconds) ? seconds : 15)) * 1000;
 		const handle = window.setTimeout(() => {
 			this.debounceTimers.delete(key);
 			fn();
-		}, this.DEBOUNCE_MS);
+		}, ms);
 		this.debounceTimers.set(key, handle);
 	}
 
@@ -625,6 +812,7 @@ export class TwoWaySyncHandler {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.syncBusyRetries.clear();
 		for (const handle of this.debounceTimers.values()) {
 			window.clearTimeout(handle);
 		}
