@@ -8,6 +8,9 @@ import {
 	NullValue,
 	TFile,
 	Notice,
+	Keymap,
+	moment,
+	normalizePath,
 } from "obsidian";
 import Calendar from "@toast-ui/calendar";
 import type { EventObject, Options } from "@toast-ui/calendar";
@@ -275,6 +278,20 @@ function buildTimeTemplates(use12h: boolean): Options["template"] {
 			const timeStr = formatEventTime(event.start, use12h);
 			return `${timeStr} ${event.title}`;
 		},
+		// Day headers carry their date so a click can open that day's daily
+		// note (see BaseTuiCalendarView.onload). Markup mirrors TUI's defaults.
+		weekDayName(model: any) {
+			const d = model.dateInstance;
+			const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+			return `<span class="cal-daily-link" data-daily-date="${ymd}">`
+				+ `<span class="toastui-calendar-day-name__date">${model.date}</span>&nbsp;&nbsp;`
+				+ `<span class="toastui-calendar-day-name__name">${model.dayName}</span></span>`;
+		},
+		monthGridHeader(model: any) {
+			const day = parseInt(model.date.split("-")[2], 10);
+			const today = model.isToday ? " toastui-calendar-weekday-grid-date-decorator" : "";
+			return `<span class="toastui-calendar-weekday-grid-date${today} cal-daily-link" data-daily-date="${model.date}">${day}</span>`;
+		},
 	};
 }
 
@@ -536,6 +553,28 @@ abstract class BaseTuiCalendarView extends BasesView {
 		const extraCls = this.getContainerClass();
 		if (extraCls) this.calendarEl.addClass(extraCls);
 
+		// Clicking a day's date opens its daily note. Listen in the capture
+		// phase and stop the mousedown: in month views the date sits inside a
+		// grid cell, and letting it through would start a grid selection and
+		// pop the "New Calendar Event" dialog as well.
+		const dailyTarget = (evt: Event) =>
+			(evt.target as HTMLElement | null)?.closest<HTMLElement>("[data-daily-date]") ?? null;
+		for (const type of ["mousedown", "pointerdown"]) {
+			this.calendarEl.addEventListener(type, (evt) => {
+				if (dailyTarget(evt)) evt.stopPropagation();
+			}, true);
+		}
+		this.calendarEl.addEventListener("click", (evt) => {
+			const el = dailyTarget(evt);
+			if (!el) return;
+			evt.preventDefault();
+			evt.stopPropagation();
+			this.openDailyNote(el.dataset.dailyDate!, Keymap.isModEvent(evt)).catch((err) => {
+				console.error("[cal-view] Failed to open daily note:", err);
+				new Notice("Could not open the daily note. See console.");
+			});
+		}, true);
+
 		this.calendar = this.createCalendar(true);
 		this.updateTitle();
 	}
@@ -587,6 +626,48 @@ abstract class BaseTuiCalendarView extends BasesView {
 		});
 
 		return cal;
+	}
+
+	/** Open the daily note for a YYYY-MM-DD date, creating it if needed.
+	 *  Uses the core Daily notes plugin's folder, filename format and
+	 *  template, so the result matches what Obsidian itself would make.
+	 *  newTab follows normal link behaviour (Cmd/Ctrl-click). */
+	private async openDailyNote(ymd: string, newTab: boolean | string): Promise<void> {
+		const opts = (this.app as any).internalPlugins?.getPluginById?.("daily-notes")?.instance?.options ?? {};
+		const format: string = opts.format || "YYYY-MM-DD";
+		const folder: string = (opts.folder || "").trim().replace(/\/+$/, "");
+		const day = moment(ymd, "YYYY-MM-DD", true);
+		if (!day.isValid()) return;
+
+		const name = day.format(format);
+		const path = normalizePath(folder ? `${folder}/${name}.md` : `${name}.md`);
+
+		let file = this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+			if (parent && !this.app.vault.getAbstractFileByPath(parent)) {
+				await this.app.vault.createFolder(parent);
+			}
+			file = await this.app.vault.create(path, await this.renderDailyTemplate(opts.template, day, name));
+		}
+		await this.app.workspace.getLeaf(newTab as any).openFile(file as TFile);
+	}
+
+	/** Fill the core Daily notes template the way the core plugin does:
+	 *  {{title}}, {{date}}, {{time}}, {{date:FMT}} and {{time:FMT}}.
+	 *  Templater syntax is left alone — Templater picks up new files itself. */
+	private async renderDailyTemplate(templatePath: string | undefined, day: moment.Moment, title: string): Promise<string> {
+		if (!templatePath) return "";
+		const tPath = normalizePath(templatePath.endsWith(".md") ? templatePath : `${templatePath}.md`);
+		const tFile = this.app.vault.getAbstractFileByPath(tPath);
+		if (!(tFile instanceof TFile)) return "";
+		const now = moment();
+		return (await this.app.vault.read(tFile))
+			.replace(/{{\s*title\s*}}/gi, title)
+			.replace(/{{\s*date\s*:\s*(.*?)\s*}}/gi, (_m, f) => day.format(f))
+			.replace(/{{\s*time\s*:\s*(.*?)\s*}}/gi, (_m, f) => now.format(f))
+			.replace(/{{\s*date\s*}}/gi, day.format("YYYY-MM-DD"))
+			.replace(/{{\s*time\s*}}/gi, now.format("HH:mm"));
 	}
 
 	/** Persist a drag/resize change to the note's frontmatter.
