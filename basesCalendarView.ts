@@ -16,7 +16,7 @@ import Calendar from "@toast-ui/calendar";
 import type { EventObject, Options } from "@toast-ui/calendar";
 import { CalendarEventModal } from "./createEventModal";
 import type { NewEventFormData, GoogleCalendarListEntry } from "./types";
-import { fmAllDay } from "./twoWaySync";
+import { fmAllDay, effectiveEndDate } from "./twoWaySync";
 
 /** TZDate from TUI Calendar — has getHours/getMinutes like Date */
 interface TZDateLike {
@@ -173,7 +173,7 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 			// TUI Calendar v2. Use noon local time so rendering paths that
 			// round to date-only (or truncate to hour-of-day) don't tip the
 			// event onto an adjacent cell in the week view's all-day row.
-			const lastInclusiveDay = ev.endDate || ev.date;
+			const lastInclusiveDay = effectiveEndDate(ev.date, ev.endDate);
 			const [sy, sm, sd] = ev.date.split("-").map(Number);
 			const [ey, em, ed] = lastInclusiveDay.split("-").map(Number);
 			return {
@@ -193,7 +193,7 @@ function toTuiEvents(events: CalendarEvent[]): EventObject[] {
 		// A timed event can finish on a later day (23:00 → 00:00). endDate
 		// carries that; pinning the end to ev.date puts it before the start,
 		// and TUI drops such an event from the grid entirely.
-		const endDay = ev.endTime && ev.endDate ? ev.endDate : ev.date;
+		const endDay = ev.endTime ? effectiveEndDate(ev.date, ev.endDate) : ev.date;
 		return {
 			id: ev.id,
 			calendarId: calId,

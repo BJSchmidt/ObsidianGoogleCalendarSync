@@ -130,6 +130,16 @@ export function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
 	return !fmTime(fm['startTime']);
 }
 
+// The day an event ends on. endDate only counts when it falls after `date`.
+// Other tools (the ticketing plugin, a hand edit) often move `date` and leave
+// endDate behind, so an event "ends" weeks before it starts — Google rejects
+// that with "The specified time range is empty". A stale endDate is treated
+// as absent: the event ends on its start day.
+export function effectiveEndDate(date: string, endDate: string | null | undefined): string {
+	const e = (endDate ?? '').slice(0, 10);
+	return e && e > date ? e : date;
+}
+
 // Minimum required fields to create a new Google Calendar event from a note.
 // Only 'date' is strictly required — title falls back to the filename, and
 // calendar falls back to the configured defaultCalendarId.
@@ -638,7 +648,7 @@ export class TwoWaySyncHandler {
 
 		if (allDay) {
 			event.start = { date };
-			const endDate = (fm['endDate'] as string) || date;
+			const endDate = effectiveEndDate(date, fmDate(fm['endDate']));
 			// Google expects exclusive end date for all-day events, so add 1 day
 			const endD = new Date(endDate + 'T00:00:00');
 			endD.setDate(endD.getDate() + 1);
@@ -646,7 +656,7 @@ export class TwoWaySyncHandler {
 		} else {
 			const tz = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
 			const startDt = startTime ? toDateTime(date, startTime) : `${date}T00:00:00`;
-			const endDt = endTime ? toDateTime(fmDate(fm['endDate']) || date, endTime) : startDt;
+			const endDt = endTime ? toDateTime(effectiveEndDate(date, fmDate(fm['endDate'])), endTime) : startDt;
 			event.start = { dateTime: startDt, timeZone: tz };
 			event.end = { dateTime: endDt, timeZone: tz };
 		}
@@ -734,7 +744,7 @@ export class TwoWaySyncHandler {
 
 		if (current.date) {
 			if (current.allDay) {
-				const endDate = current.endDate || current.date;
+				const endDate = effectiveEndDate(current.date, current.endDate);
 				const endD = new Date(endDate + 'T00:00:00');
 				endD.setDate(endD.getDate() + 1);
 				// Null out dateTime for timed → all-day conversions
@@ -747,7 +757,7 @@ export class TwoWaySyncHandler {
 				// Honour endDate so events that run past midnight keep their real
 				// end instant instead of collapsing to before their own start.
 				const endDt = current.endTime
-					? toDateTime(current.endDate || current.date, current.endTime)
+					? toDateTime(effectiveEndDate(current.date, current.endDate), current.endTime)
 					: startDt;
 				// Null out date for all-day → timed conversions
 				patch.start = { date: null, dateTime: startDt, timeZone: timezone };
