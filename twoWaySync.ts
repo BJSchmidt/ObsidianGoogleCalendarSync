@@ -95,9 +95,7 @@ function googleEventToSnapshot(raw: calendar_v3.Schema$Event): Partial<Frontmatt
 
 	let endDate: string | null = null;
 	if (isAllDay && raw.end?.date) {
-		const endD = new Date(raw.end.date + 'T00:00:00');
-		endD.setDate(endD.getDate() - 1);
-		const adjusted = endD.toISOString().slice(0, 10);
+		const adjusted = addDaysYmd(raw.end.date, -1);
 		if (adjusted !== dateStr) endDate = adjusted;
 	} else if (!isAllDay && raw.end?.dateTime) {
 		// Timed events can end on a later day; record it so the note round-trips.
@@ -138,6 +136,22 @@ export function fmAllDay(fm: Record<string, unknown> | undefined): boolean {
 export function effectiveEndDate(date: string, endDate: string | null | undefined): string {
 	const e = (endDate ?? '').slice(0, 10);
 	return e && e > date ? e : date;
+}
+
+// True for a real calendar date written as YYYY-MM-DD. Rejects template
+// placeholders like "{{date}}" and impossible dates like 2026-02-31.
+function isValidYmd(s: string): boolean {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+	const [y, m, d] = s.split('-').map(Number);
+	const t = new Date(Date.UTC(y, m - 1, d));
+	return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
+// Shift a YYYY-MM-DD by whole days. Done in UTC so the result can't drift a
+// day depending on the local timezone, as local-midnight + toISOString did.
+function addDaysYmd(ymd: string, n: number): string {
+	const [y, m, d] = ymd.split('-').map(Number);
+	return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
 // Minimum required fields to create a new Google Calendar event from a note.
@@ -221,8 +235,31 @@ export class TwoWaySyncHandler {
 			const eventId = fm['cal-event-id'] as string | undefined;
 			if (eventId && eventId.trim()) continue; // Already synced
 
-			await this.handleNewEvent(file, fm);
+			// One broken note must not stop the scan for every note after it.
+			try {
+				await this.handleNewEvent(file, fm);
+			} catch (err) {
+				console.error(`[google-calendar-sync] could not create an event for ${file.path}:`, err);
+			}
 		}
+	}
+
+	/** Template files carry calendar/date placeholders ("{{date}}") and must
+	 *  never become events. Covers the core Templates folder, Templater's
+	 *  folder, and this plugin's own template settings. */
+	private isTemplateFile(file: TFile): boolean {
+		const app = this.app as any;
+		const folders = [
+			app.internalPlugins?.getPluginById?.('templates')?.instance?.options?.folder,
+			app.plugins?.plugins?.['templater-obsidian']?.settings?.templates_folder,
+		]
+			.filter((f: unknown): f is string => typeof f === 'string' && f.trim() !== '')
+			.map(f => normalizePath(f.trim()));
+		if (folders.some(f => file.path.startsWith(f + '/'))) return true;
+
+		const settings = this.getSettings();
+		return [settings.newEventTemplatePath, settings.templatePath]
+			.some(t => !!t && normalizePath(t) === file.path);
 	}
 
 	// Entry point for vault 'modify' events
@@ -601,6 +638,13 @@ export class TwoWaySyncHandler {
 		if (missing.length > 0) {
 			return; // Not ready yet; will retry on next save
 		}
+		if (this.isTemplateFile(file)) return;
+
+		const rawDate = fmDate(fm['date']);
+		if (!isValidYmd(rawDate)) {
+			console.log(`[google-calendar-sync] not creating an event for ${file.path}: date "${String(fm['date'])}" is not YYYY-MM-DD`);
+			return;
+		}
 
 		const title = String(fm['title'] ?? '') || file.basename;
 		const date = fmDate(fm['date']);
@@ -650,9 +694,7 @@ export class TwoWaySyncHandler {
 			event.start = { date };
 			const endDate = effectiveEndDate(date, fmDate(fm['endDate']));
 			// Google expects exclusive end date for all-day events, so add 1 day
-			const endD = new Date(endDate + 'T00:00:00');
-			endD.setDate(endD.getDate() + 1);
-			event.end = { date: endD.toISOString().slice(0, 10) };
+			event.end = { date: addDaysYmd(endDate, 1) };
 		} else {
 			const tz = (fm['cal-timezone'] as string) || Intl.DateTimeFormat().resolvedOptions().timeZone;
 			const startDt = startTime ? toDateTime(date, startTime) : `${date}T00:00:00`;
@@ -745,11 +787,9 @@ export class TwoWaySyncHandler {
 		if (current.date) {
 			if (current.allDay) {
 				const endDate = effectiveEndDate(current.date, current.endDate);
-				const endD = new Date(endDate + 'T00:00:00');
-				endD.setDate(endD.getDate() + 1);
 				// Null out dateTime for timed → all-day conversions
 				patch.start = { date: current.date, dateTime: null };
-				patch.end = { date: endD.toISOString().slice(0, 10), dateTime: null };
+				patch.end = { date: addDaysYmd(endDate, 1), dateTime: null };
 			} else {
 				const startDt = current.startTime
 					? toDateTime(current.date, current.startTime)
