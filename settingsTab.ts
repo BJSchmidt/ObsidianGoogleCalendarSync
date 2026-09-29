@@ -1,6 +1,14 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { GoogleCalendarListEntry } from './types';
 import type GoogleCalendarSync from './main';
+import {
+	getDeviceId,
+	getDeviceName,
+	isSyncEnabledOnDevice,
+	setDeviceName,
+	setSyncEnabledOnDevice,
+	formatAge,
+} from './deviceOwnership';
 
 export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 	plugin: GoogleCalendarSync;
@@ -63,6 +71,46 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 				cls: 'setting-item-description',
 			});
 		}
+
+		// ── Device ownership ─────────────────────────────────────────────────
+		// Single-device-sync model. Each machine must opt in explicitly, and
+		// we show who last synced so two machines racing is visible.
+		const lastSyncDeviceId = this.plugin.settings.lastSyncDeviceId;
+		const lastSyncDeviceName = this.plugin.settings.lastSyncDeviceName || 'another device';
+		const lastSyncAt = this.plugin.settings.lastSyncAt;
+		const thisDeviceId = getDeviceId();
+		const thisIsOwner = lastSyncDeviceId === thisDeviceId;
+		const ownerDesc = !lastSyncDeviceId
+			? 'No device has synced this vault yet.'
+			: thisIsOwner
+				? `This device last synced ${lastSyncAt ? formatAge(Date.now() - new Date(lastSyncAt).getTime()) : ''}.`
+				: `Last synced by "${lastSyncDeviceName}" ${lastSyncAt ? formatAge(Date.now() - new Date(lastSyncAt).getTime()) : ''}. Enabling sync here while another device is active can cause duplicate notes.`;
+
+		new Setting(containerEl)
+			.setName('Enable sync on this device')
+			.setDesc(ownerDesc)
+			.addToggle(toggle => toggle
+				.setValue(isSyncEnabledOnDevice())
+				.onChange(value => {
+					setSyncEnabledOnDevice(value);
+					// Start or stop the auto-sync timer to match the new state
+					if (value && this.plugin.settings.autoSyncInterval > 0) {
+						this.plugin.syncEngine.startAutoSync();
+					} else {
+						this.plugin.syncEngine.stopAutoSync();
+					}
+					this.display();
+				}));
+
+		new Setting(containerEl)
+			.setName('This device name')
+			.setDesc('Shown to other machines that open this vault, so you can tell which one is syncing.')
+			.addText(text => text
+				.setPlaceholder('Mac, Home PC, Work laptop…')
+				.setValue(getDeviceName())
+				.onChange(value => {
+					setDeviceName(value.trim() || 'This device');
+				}));
 
 		// ── Status (top, no heading per Obsidian guidelines) ─────────────────
 		const lastSync = this.plugin.settings.lastSyncTime
@@ -197,6 +245,20 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 					this.plugin.syncEngine.restartAutoSync();
 				}));
 
+		new Setting(containerEl)
+			.setName('Push-to-Google debounce')
+			.setDesc('Seconds to wait after the last edit to a note before pushing the change to Google. Longer values batch active editing sessions into one push. Clamped to 2–120 seconds.')
+			.addText(text => text
+				.setPlaceholder('15')
+				.setValue(String(this.plugin.settings.twoWaySyncDebounceSeconds ?? 15))
+				.onChange((value) => {
+					const n = parseInt(value, 10);
+					if (Number.isFinite(n)) {
+						this.plugin.settings.twoWaySyncDebounceSeconds = Math.max(2, Math.min(120, n));
+						this.debouncedSave();
+					}
+				}));
+
 		// ── Calendar Selection ───────────────────────────────────────────────
 		new Setting(containerEl).setName('Calendars to Sync').setHeading();
 
@@ -231,17 +293,27 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Note Settings').setHeading();
 
 		new Setting(containerEl)
-			.setName('Note title format')
-			.setDesc('Format for event note filenames. Available tokens: {title}, {date}. When an event is rescheduled, the note is automatically renamed and internal links are updated.')
-			.addText(text => text
-				.setPlaceholder('{title} {date}')
-				.setValue(this.plugin.settings.noteTitleFormat)
+			.setName('Show calendar ribbon button')
+			.setDesc('Add a ribbon icon that opens your calendar base file. Takes effect after reloading the plugin.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.showCalendarRibbonButton)
 				.onChange((value) => {
-					this.plugin.settings.noteTitleFormat = value || '{title} {date}';
+					this.plugin.settings.showCalendarRibbonButton = value;
 					this.debouncedSave();
 				}));
 
 		new Setting(containerEl)
+			.setName('Calendar base path')
+			.setDesc('Path to your .base file opened by the ribbon button and Open Calendar command.')
+			.addText(text => text
+				.setPlaceholder('Calendar.base')
+				.setValue(this.plugin.settings.calendarBasePath)
+				.onChange((value) => {
+					this.plugin.settings.calendarBasePath = value;
+					this.debouncedSave();
+				}));
+
+new Setting(containerEl)
 			.setName('Note body template')
 			.setDesc('Path to a vault note used as the body template for synced event notes. Leave empty to use the default (# {{title}}). Supports {{title}}, {{date}}, {{startTime}}, {{location}}, etc.')
 			.addText(text => text
@@ -354,7 +426,18 @@ export class GoogleCalendarSyncSettingTab extends PluginSettingTab {
 			const calSetting = new Setting(this.calendarListContainer)
 				.setName(`${cal.name}${cal.isPrimary ? ' (primary)' : ''}`)
 				.setDesc(cal.id)
-				.addToggle(toggle => toggle
+				.addColorPicker(picker => {
+						const customColor = this.plugin.settings.calendarColors?.[cal.id];
+						picker.setValue(customColor || cal.color || '#4285F4');
+						picker.onChange(async (value) => {
+							if (!this.plugin.settings.calendarColors) {
+								this.plugin.settings.calendarColors = {};
+							}
+							this.plugin.settings.calendarColors[cal.id] = value;
+							await this.plugin.saveSettings();
+						});
+					})
+					.addToggle(toggle => toggle
 					.setValue(isEnabled)
 					.onChange(async (value) => {
 						if (value) {

@@ -65,6 +65,11 @@ export class CalendarFetcher {
 				params.timeMax = timeMax.toISOString();
 				params.singleEvents = true;
 				params.orderBy = 'startTime';
+				// Ask for cancelled events too. The incremental (syncToken) path
+				// returns them automatically, but a full sync omits them by
+				// default — so an event deleted elsewhere simply stops appearing
+				// in the results and its note is never marked as cancelled.
+				params.showDeleted = true;
 			}
 
 			const allEvents: calendar_v3.Schema$Event[] = [];
@@ -102,6 +107,17 @@ export class CalendarFetcher {
 		}
 	}
 
+	/** Fetch a single event from Google and map it to a CalendarEventNote.
+	 *  Returns null if the event is cancelled/deleted or malformed. */
+	async fetchSingleEvent(
+		calendarId: string,
+		calendarName: string,
+		eventId: string,
+	): Promise<CalendarEventNote | null> {
+		const response = await this.calendar.events.get({ calendarId, eventId });
+		return this.mapEvent(response.data, calendarId, calendarName);
+	}
+
 	private mapEvent(
 		raw: calendar_v3.Schema$Event,
 		calendarId: string,
@@ -115,23 +131,31 @@ export class CalendarFetcher {
 
 		const isAllDay = !raw.start?.dateTime;
 
-		// Resolve the event's timezone first so time/date extraction is correct
-		const timezone = raw.start?.timeZone
+		// The event's source timezone (e.g. "America/Denver", "UTC") — informational
+		// only. Some events (appointment-link integrations, externally-scheduled
+		// meetings) come back with timeZone: "UTC" even though they render in the
+		// user's local zone in Google Calendar.
+		const sourceTimezone = raw.start?.timeZone
 			?? raw.end?.timeZone
 			?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Determine the canonical date string (YYYY-MM-DD) in the event's timezone
-		const dateStr = raw.start?.date
-			?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, timezone) : '')!;
+		// Display timezone — always the user's local zone so date/startTime/endTime
+		// in the note match what Google Calendar shows them on screen.
+		const displayTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-		// Extract wall-clock times in the event's timezone (handles UTC "Z" responses)
+		// Determine the canonical date string (YYYY-MM-DD) in the display timezone
+		const dateStr = raw.start?.date
+			?? (raw.start?.dateTime ? wallClockDate(raw.start.dateTime, displayTimezone) : '')!;
+
+		// Extract wall-clock times in the user's local timezone (handles UTC "Z"
+		// responses and events stored against any other IANA zone).
 		let startTimeStr: string | null = null;
 		let endTimeStr: string | null = null;
 		if (!isAllDay && raw.start?.dateTime) {
-			startTimeStr = wallClockTime(raw.start.dateTime, timezone);
+			startTimeStr = wallClockTime(raw.start.dateTime, displayTimezone);
 		}
 		if (!isAllDay && raw.end?.dateTime) {
-			endTimeStr = wallClockTime(raw.end.dateTime, timezone);
+			endTimeStr = wallClockTime(raw.end.dateTime, displayTimezone);
 		}
 
 		// For multi-day all-day events, compute inclusive end date
@@ -142,6 +166,11 @@ export class CalendarFetcher {
 			endD.setDate(endD.getDate() - 1);
 			const adjusted = endD.toISOString().slice(0, 10);
 			if (adjusted !== dateStr) endDateStr = adjusted;
+		} else if (!isAllDay && raw.end?.dateTime) {
+			// A timed event can end on a later day (23:00 → 00:00). Without this
+			// the note loses the end date and the event collapses on next push.
+			const endDay = wallClockDate(raw.end.dateTime, displayTimezone);
+			if (endDay !== dateStr) endDateStr = endDay;
 		}
 
 		// Extract video conference link; fall back to hangoutLink if conferenceData
@@ -192,7 +221,7 @@ export class CalendarFetcher {
 			videoLink,
 			eventLink: raw.htmlLink || '',
 			isRecurring: !!(raw.recurringEventId || raw.recurrence?.length),
-			timezone,
+			timezone: sourceTimezone,
 			created: raw.created || new Date().toISOString(),
 			updated: raw.updated || new Date().toISOString(),
 		};

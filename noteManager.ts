@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile, TFolder } from 'obsidian';
+import { App, normalizePath, TFile } from 'obsidian';
 import { parse, stringify } from 'yaml';
 import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } from './types';
 
@@ -13,7 +13,7 @@ import { CalendarEventNote, FrontmatterSnapshot, GoogleCalendarSyncSettings } fr
 // and use flat names instead, with a list of the affected properties shown in the
 // settings panel so they know exactly what will change.
 const SYNC_OWNED_KEYS = new Set([
-	'cal-type', 'cal-calendar', 'cal-calendar-id', 'cal-event-id',
+	'cal-type', 'calendar', 'cal-calendar', 'cal-calendar-id', 'cal-event-id',
 	'title', 'date', 'startTime', 'endTime', 'endDate',
 	'allDay', 'cal-location', 'cal-description',
 	'cal-attendees', 'cal-organizer', 'cal-status',
@@ -23,8 +23,11 @@ const SYNC_OWNED_KEYS = new Set([
 ]);
 
 export class NoteManager {
-	// In-memory index: eventId -> vault path
+	// In-memory index: eventId -> vault path (primary — oldest file wins on duplicates)
 	private eventIndex = new Map<string, string>();
+	// Populated by buildIndex: eventId -> all paths claiming that eventId
+	// (size > 1 means duplicate notes exist — e.g. created by two devices racing)
+	private duplicateIndex = new Map<string, string[]>();
 
 	// Counter to prevent echo-loop in two-way sync: >0 during vault writes
 	private writeDepth = 0;
@@ -40,31 +43,41 @@ export class NoteManager {
 
 	async buildIndex(): Promise<void> {
 		this.eventIndex.clear();
-		const folder = this.app.vault.getAbstractFileByPath(
-			normalizePath(this.settings.syncFolder)
-		);
-		if (!folder || !(folder instanceof TFolder)) return;
+		this.duplicateIndex.clear();
 
-		for (const file of this.getAllMarkdownFiles(folder)) {
+		// First pass — collect every path per eventId
+		const allPaths = new Map<string, TFile[]>();
+		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			// Fall back to legacy "event-id" so existing notes are found during migration
 			const eventId = cache?.frontmatter?.['cal-event-id'] ?? cache?.frontmatter?.['gcal-event-id'];
 			if (eventId && typeof eventId === 'string' && eventId.trim()) {
-				this.eventIndex.set(eventId, file.path);
+				const list = allPaths.get(eventId) ?? [];
+				list.push(file);
+				allPaths.set(eventId, list);
 			}
+		}
+
+		// Second pass — pick the oldest file as the primary, record any duplicates
+		for (const [eventId, files] of allPaths.entries()) {
+			if (files.length === 1) {
+				this.eventIndex.set(eventId, files[0].path);
+				continue;
+			}
+			// Sort by ctime (file creation) ascending — oldest wins
+			const sorted = files.sort((a, b) => (a.stat.ctime ?? 0) - (b.stat.ctime ?? 0));
+			this.eventIndex.set(eventId, sorted[0].path);
+			this.duplicateIndex.set(eventId, sorted.map(f => f.path));
+			console.warn(
+				`[google-calendar-sync] duplicate event-id detected: ${eventId}\n  primary: ${sorted[0].path}\n  extras:  ${sorted.slice(1).map(f => f.path).join(', ')}`
+			);
 		}
 	}
 
-	private getAllMarkdownFiles(folder: TFolder): TFile[] {
-		const files: TFile[] = [];
-		for (const child of folder.children) {
-			if (child instanceof TFile && child.extension === 'md') {
-				files.push(child);
-			} else if (child instanceof TFolder) {
-				files.push(...this.getAllMarkdownFiles(child));
-			}
-		}
-		return files;
+	/** Return all eventIds that have more than one note claiming them, with the
+	 *  list of conflicting paths (oldest first). */
+	getDuplicateEventNotes(): Array<{ eventId: string; paths: string[] }> {
+		return Array.from(this.duplicateIndex.entries()).map(([eventId, paths]) => ({ eventId, paths }));
 	}
 
 	findNoteByEventId(eventId: string): TFile | null {
@@ -75,29 +88,30 @@ export class NoteManager {
 	}
 
 	getNotePathForEvent(event: CalendarEventNote): string {
-		const format = this.settings.noteTitleFormat || '{title} {date}';
-		const baseName = this.sanitizeFilename(
-			format
-				.replace(/\{title\}/g, event.title)
-				.replace(/\{date\}/g, event.date)
-		);
+		const baseName = this.sanitizeFilename(event.title);
 		const calendarFolder = this.sanitizeFilename(event.calendarName);
 		const baseFolder = normalizePath(`${this.settings.syncFolder}/${calendarFolder}`);
-		const basePath = normalizePath(`${baseFolder}/${baseName}.md`);
+		let path = normalizePath(`${baseFolder}/${baseName}.md`);
 
-		// Check for filename collision with a different event
-		const existing = this.app.vault.getAbstractFileByPath(basePath);
-		if (existing instanceof TFile) {
-			const cache = this.app.metadataCache.getFileCache(existing);
-			// Fall back to legacy "event-id" for collision detection during migration
-		const existingId = cache?.frontmatter?.['cal-event-id'] ?? cache?.frontmatter?.['gcal-event-id'];
-			if (existingId && existingId !== event.eventId) {
+		// Use the eventIndex (synchronously updated) instead of the metadata cache
+		// (async) to determine whether the file at `path` belongs to this event.
+		const ownPath = this.eventIndex.get(event.eventId);
+
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile && existing.path !== ownPath) {
+			// Collision with a different event's note — append date
+			const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+			path = normalizePath(`${baseFolder}/${nameWithDate}.md`);
+
+			const existing2 = this.app.vault.getAbstractFileByPath(path);
+			if (existing2 instanceof TFile && existing2.path !== ownPath) {
+				// Double collision (same title + same date) — append eventId suffix
 				const suffix = event.eventId.slice(-6);
-				return normalizePath(`${baseFolder}/${baseName}_${suffix}.md`);
+				path = normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`);
 			}
 		}
 
-		return basePath;
+		return path;
 	}
 
 	async ensureFolderExists(folderPath: string): Promise<void> {
@@ -151,7 +165,7 @@ export class NoteManager {
 			// Custom properties first; standard fields below always take precedence
 			...custom,
 			'cal-type': 'calendar-event',
-			'cal-calendar': event.calendarName,
+			'calendar': event.calendarName,
 			'cal-calendar-id': event.calendarId,
 			'cal-event-id': event.eventId,
 			'title': event.title,
@@ -193,20 +207,44 @@ export class NoteManager {
 	}
 
 	async createEventNote(event: CalendarEventNote, body: string): Promise<TFile> {
-		const path = this.getNotePathForEvent(event);
-		const folderPath = path.substring(0, path.lastIndexOf('/'));
-		await this.ensureFolderExists(folderPath);
+		const primaryPath = this.getNotePathForEvent(event);
+		const baseFolder = primaryPath.substring(0, primaryPath.lastIndexOf('/'));
+		await this.ensureFolderExists(baseFolder);
 
 		const content = this.buildNoteContent(this.buildFrontmatter(event), body);
 
-		this.writeDepth++;
-		try {
-			const file = await this.app.vault.create(path, content);
-			this.eventIndex.set(event.eventId, file.path);
-			return file;
-		} finally {
-			this.writeDepth--;
+		const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+		const suffix = event.eventId.slice(-6);
+
+		// Build fallback candidates.  On case-insensitive filesystems (macOS),
+		// vault.getAbstractFileByPath() (case-sensitive) may report a path as free
+		// while the OS already has a file with different capitalisation there.
+		// vault.create() then throws "File already exists." — same try-fallback
+		// strategy used in renameIfNeeded() handles this gracefully.
+		const seen = new Set<string>();
+		const candidates = [
+			primaryPath,
+			normalizePath(`${baseFolder}/${nameWithDate}.md`),
+			normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`),
+		].filter(p => seen.has(p) ? false : (seen.add(p), true));
+
+		for (const candidate of candidates) {
+			this.writeDepth++;
+			try {
+				const file = await this.app.vault.create(candidate, content);
+				this.eventIndex.set(event.eventId, file.path);
+				return file;
+			} catch (err: any) {
+				if ((err?.message ?? '').toLowerCase().includes('already exists')) {
+					continue; // case-insensitive collision — try next candidate
+				}
+				throw err;
+			} finally {
+				this.writeDepth--;
+			}
 		}
+
+		throw new Error(`Could not create a note for "${event.title}": all candidate paths already exist on disk.`);
 	}
 
 	async updateEventNote(file: TFile, event: CalendarEventNote): Promise<TFile> {
@@ -228,6 +266,13 @@ export class NoteManager {
 				merged[key] = googleFm[key];
 			}
 		}
+		// Migrate legacy cal-calendar → calendar
+		if ('cal-calendar' in merged) {
+			if (!('calendar' in merged)) {
+				merged['calendar'] = merged['cal-calendar'];
+			}
+			delete merged['cal-calendar'];
+		}
 
 		const content = this.buildNoteContent(merged, body);
 
@@ -239,25 +284,46 @@ export class NoteManager {
 			this.writeDepth--;
 		}
 
-		// Rename the file if the desired path has changed (e.g. event was rescheduled
-		// or retitled).  fileManager.renameFile() triggers Obsidian's built-in link
-		// updater so any [[wiki links]] to this note are rewritten automatically.
+		return this.renameIfNeeded(file, event);
+	}
+
+	/** Rename a managed note (inside sync folder) if its filename doesn't match
+	 *  the current title.  User notes outside the sync folder are never renamed. */
+	async renameIfNeeded(file: TFile, event: CalendarEventNote): Promise<TFile> {
+		const syncPrefix = normalizePath(this.settings.syncFolder) + '/';
+		if (!file.path.startsWith(syncPrefix)) return file;
+
 		const desiredPath = this.getNotePathForEvent(event);
-		if (desiredPath !== file.path) {
-			const desiredFolder = desiredPath.substring(0, desiredPath.lastIndexOf('/'));
-			await this.ensureFolderExists(desiredFolder);
+		if (desiredPath === file.path) return file;
+
+		const baseFolder = desiredPath.substring(0, desiredPath.lastIndexOf('/'));
+		await this.ensureFolderExists(baseFolder);
+
+		// Try the desired path; if it fails (e.g. case-insensitive filesystem
+		// collision on macOS/Windows), fall back to date-appended, then eventId suffix.
+		const fallbacks = [desiredPath];
+		const nameWithDate = this.sanitizeFilename(`${event.title} ${event.date}`);
+		const datePath = normalizePath(`${baseFolder}/${nameWithDate}.md`);
+		if (datePath !== file.path) fallbacks.push(datePath);
+		const suffix = event.eventId.slice(-6);
+		const suffixPath = normalizePath(`${baseFolder}/${nameWithDate}_${suffix}.md`);
+		if (suffixPath !== file.path) fallbacks.push(suffixPath);
+
+		for (const target of fallbacks) {
 			this.writeDepth++;
 			try {
-				await this.app.fileManager.renameFile(file, desiredPath);
-				this.eventIndex.set(event.eventId, desiredPath);
+				await this.app.fileManager.renameFile(file, target);
+				this.eventIndex.set(event.eventId, target);
+				const renamed = this.app.vault.getAbstractFileByPath(target);
+				return renamed instanceof TFile ? renamed : file;
+			} catch {
+				// This target collided — try the next fallback
 			} finally {
 				this.writeDepth--;
 			}
-			const renamed = this.app.vault.getAbstractFileByPath(desiredPath);
-			return renamed instanceof TFile ? renamed : file;
 		}
 
-		return file;
+		return file; // All fallbacks exhausted, keep current name
 	}
 
 	async markEventCancelled(file: TFile): Promise<void> {
@@ -332,10 +398,58 @@ export class NoteManager {
 			if (lines[i].trim() === '---') {
 				// Return everything after this line, stripping leading blank lines
 				const rest = lines.slice(i + 1).join('\n');
-				return rest.replace(/^\n+/, '');
+				const stripped = rest.replace(/^\n+/, '');
+				return this.stripEmbeddedFrontmatterBlocks(stripped);
 			}
 		}
 		return content;
+	}
+
+	/** Strip embedded "---" blocks left in a body by past corruption.
+	 *
+	 *  The bug pattern looks like:
+	 *      <body content>
+	 *      cal-attendees:
+	 *      cal-organizer: ...
+	 *      cal-updated: ...
+	 *      ---
+	 *      <body content again>
+	 *      cal-attendees: ...
+	 *      ---
+	 *      # Real heading
+	 *
+	 *  We scan for "---" delimiter lines whose preceding block contains a
+	 *  sync-owned frontmatter key ("cal-attendees:", "cal-event-id:", etc.).
+	 *  Everything up to and including the *last* such delimiter is discarded
+	 *  — the real body is whatever follows. A "---" preceded only by
+	 *  ordinary prose is left alone (legitimate Markdown horizontal rule). */
+	private stripEmbeddedFrontmatterBlocks(body: string): string {
+		const lines = body.split('\n');
+		const keyPattern = /^(cal-[a-z-]+|calendar|date|title|startTime|endTime|endDate|allDay)\s*:/;
+
+		let lastBadDelimiterIdx = -1;
+		let runStart = 0;
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].trim() !== '---') continue;
+			let sawSyncKey = false;
+			for (let j = runStart; j < i; j++) {
+				if (keyPattern.test(lines[j].trim())) {
+					sawSyncKey = true;
+					break;
+				}
+			}
+			if (sawSyncKey) lastBadDelimiterIdx = i;
+			runStart = i + 1;
+		}
+
+		if (lastBadDelimiterIdx < 0) return body;
+
+		const cleaned = lines.slice(lastBadDelimiterIdx + 1).join('\n').replace(/^\n+/, '');
+		const removedBytes = body.length - cleaned.length;
+		console.warn(
+			`[google-calendar-sync] stripped ${removedBytes} byte(s) of embedded frontmatter from note body (last bad delimiter at body line ${lastBadDelimiterIdx + 1})`,
+		);
+		return cleaned;
 	}
 
 	// Parse YAML frontmatter block into a plain object
